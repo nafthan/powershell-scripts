@@ -125,7 +125,6 @@ The file system scans read paths with the `\\?\` prefix, so they can still get i
 - Passwords never go in files. SMTP logins use `Export-Clixml`, which Windows encrypts so only that user on that machine can read it.
 - Anything that changes something is opt-in. The inactive accounts script needs `-DisableAccounts`, supports `-WhatIf` and confirms each account.
 - The port check only makes a TCP connection and sends no data. Only scan systems you're responsible for.
-- Before pushing a fork, run `git status` to check no `config.psd1`, credential or report files are staged. A secret scanner such as [gitleaks](https://github.com/gitleaks/gitleaks) is a good extra check. New settings get a placeholder in `config.example.psd1`, using the reserved `example.com` domain or `<ANGLE BRACKETS>` for free text.
 
 ## Testing
 
