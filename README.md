@@ -7,8 +7,6 @@
 
 Everyday reporting scripts for Windows servers, file shares and Active Directory, with every report saved as an Excel workbook or HTML page and optionally emailed.
 
-[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%20%7C%207%2B-2F2C28?style=flat-square&labelColor=121110)](#requirements)
-[![Licence](https://img.shields.io/github/license/nafthan/powershell-scripts?style=flat-square&label=licence&labelColor=121110&color=2F2C28)](LICENSE)
 
 [nafthan.co.uk](https://nafthan.co.uk)
 
