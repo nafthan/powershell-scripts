@@ -137,6 +137,21 @@
         }
     }
 
+    M365 = @{
+        # Tenant to connect to, e.g. 'contoso.onmicrosoft.com'. Leave empty to use the
+        # signed-in account's own tenant. Required for app-only (certificate) sign-in.
+        TenantId = ''
+
+        # App-only sign-in for scheduled runs: an Entra app registration with a certificate.
+        # Never put a client secret in this file. Leave both empty to sign in interactively.
+        ClientId              = ''
+        CertificateThumbprint = ''
+
+        IncludeGuests       = $false
+        StaleDays           = 90     # enabled users with no sign-in for longer than this are flagged
+        NewAccountGraceDays = 14     # accounts newer than this are noted as "new" when MFA is missing
+    }
+
     RiskyAccounts = @{
         # Optional - leave empty to check the whole domain.
         SearchBase = ''
