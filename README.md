@@ -1,99 +1,199 @@
-<div align="center">
+# PowerShell Scripts
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.gif">
-  <img alt="PowerShell Scripts" src="docs/banner-light.gif" width="100%">
-</picture>
+By **nafthan** - [nafthan.co.uk](https://nafthan.co.uk)
 
-Everyday reporting scripts for Windows servers, file shares and Active Directory, with every report saved as an Excel workbook or HTML page and optionally emailed.
+Day-to-day reporting scripts for Windows servers, file shares, Active Directory and Microsoft 365.
 
-
-[nafthan.co.uk](https://nafthan.co.uk)
-
-</div>
-
-## About
-
-These started as one script. I needed to find every path on a file share that was over the Windows 260-character limit, and it grew from there into the reports I actually reach for during the week: who has access to what, which accounts haven't logged on in months, whose password is about to expire, and whether the servers are healthy.
-
-Two decisions shaped all of it. First, nothing needs installing: the scripts write real `.xlsx` workbooks themselves, so the machine running them doesn't need Excel or any extra modules. Second, it's meant to live in a public repo, so there are no server names, domains or email addresses in the scripts at all. Everything specific to an environment lives in one config file that git never sees.
-
-## Scripts
+Every report is saved as an Excel workbook (`.xlsx`) or HTML page, and can be emailed. Excel and extra PowerShell modules are not needed on the machine running the scripts.
 
 | Area | Script | What it does |
 |---|---|---|
-| File server | `FileServer/Find-LongPaths.ps1` | Paths longer than the 260-character Windows limit, with how far over each one is. Standalone, no config needed |
 | File server | `FileServer/Get-FolderSizeReport.ps1` | Size of every folder down to N levels, with file counts and last-changed dates |
-| File server | `FileServer/Get-NtfsPermissionsAudit.ps1` | NTFS permissions, flagging broken inheritance, orphaned SIDs, Everyone or Domain Users with write access, and more |
-| Active Directory | `ActiveDirectory/Get-InactiveAccountsReport.ps1` | Users and computers with no logon for N days, with an optional disable-and-move mode |
-| Active Directory | `ActiveDirectory/Get-PasswordExpiryReport.ps1` | Passwords expiring soon, and can email users a reminder |
-| Servers | `ServerHealth/Invoke-DailyHealthCheck.ps1` | Uptime, pending reboot, disk space, stopped services, last update and event log errors, as one HTML report |
+| File server | `FileServer/Get-NtfsPermissionsAudit.ps1` | NTFS permissions, flagging broken inheritance, orphaned SIDs, Everyone/Domain Users with write access, and more |
+| File server | `FileServer/Find-LongPaths.ps1` | Paths longer than the 260-character Windows limit |
+| Active Directory | `ActiveDirectory/Get-InactiveAccountsReport.ps1` | Users and computers with no logon for N days; can optionally disable and move them |
+| Active Directory | `ActiveDirectory/Get-PasswordExpiryReport.ps1` | Passwords expiring soon; can email users reminders |
+| Servers | `ServerHealth/Invoke-DailyHealthCheck.ps1` | Uptime, pending reboot, disk space, stopped services, last update and event log errors, as an HTML report |
 | Servers | `ServerHealth/Get-CertificateExpiryReport.ps1` | Expiring certificates in server stores and on live HTTPS endpoints |
-| Network | `Network/Get-OpenPortReport.ps1` | Which TCP ports are open on each server, compared with what should be |
-| Security | `Security/Get-RiskyAccountReport.ps1` | AD accounts with risky settings, rated High, Medium or Low, each with a fix |
+| Network | `Network/Get-OpenPortReport.ps1` | Which TCP ports are reachable on your servers, compared with the ports that should be open |
+| Microsoft 365 | `M365/Get-MfaStatusReport.ps1` | MFA status for every user, with sign-in status, last sign-in, creation date, methods, admin roles and risk flags |
+| Security | `Security/Get-RiskyAccountReport.ps1` | AD accounts with settings attackers abuse (Kerberoastable, AS-REP roastable, password not required, unconstrained delegation, and more) |
 
-## Getting started
+## Two ways to use these scripts
 
-### Requirements
+| | Standalone | Toolkit |
+|---|---|---|
+| Where | `Standalone/` | The other folders, with `Shared/` and `config.psd1` |
+| Setup | None - download one `.ps1` and run it | Copy the whole repo and fill in `config.psd1` once |
+| Settings | Parameters on each run | One config file shared by every script, with parameters to override |
+| Best for | Trying a script, one-off reports | Scheduled tasks and regular use across several scripts |
 
-- Windows PowerShell 5.1 or PowerShell 7+
-- For the Active Directory scripts: the ActiveDirectory module (RSAT), or run them on a domain controller
-- For remote server checks: WinRM on the target servers, and an account with local admin rights on them. The health check falls back to DCOM if WinRM fails
+The scripts work the same either way.
 
-### Setup
+### Standalone scripts
 
-```powershell
-git clone https://github.com/nafthan/powershell-scripts.git
-cd powershell-scripts
-Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File      # only needed if you downloaded a zip
-
-Copy-Item .\config.example.psd1 .\config.psd1
-notepad .\config.psd1
-```
-
-Replace every placeholder in `config.psd1` (`example.com`, `SERVER01`, `<...>`) with your own values. The scripts warn you if a setting they use still contains a placeholder.
-
-If your mail relay needs a login, save it as an encrypted credential file while logged on as the account that will run the scripts, then set `CredentialFile = 'smtp.cred.xml'` in the Email section:
+Download a script from `Standalone/`, unblock it, and run it:
 
 ```powershell
-Get-Credential | Export-Clixml -Path .\smtp.cred.xml
+Unblock-File .\Get-FolderSizeReport.ps1
+.\Get-FolderSizeReport.ps1 -Path 'D:\Shares' -Depth 2
+Get-Help .\Get-FolderSizeReport.ps1 -Full      # every option
 ```
 
-Reports go to `Reports\` in the toolkit folder unless you change `General.OutputFolder`.
+- Reports are saved in the current folder.
+- Settings that live in the toolkit's config file use built-in defaults, for example the health check thresholds and the certificate stores.
+- A few scripts get extra parameters instead:
+  - `Get-OpenPortReport.ps1 -AllowedPort 135,445,3389` flags any other open port.
+  - `Get-PasswordExpiryReport.ps1 -HelpdeskContact 'the IT Service Desk on 0123 456789'` sets the contact shown in user reminders.
+  - `Get-InactiveAccountsReport.ps1` has no default exclusions. Use `-Exclude 'svc_*','admin_*'` to skip service and admin accounts.
+- To email a report, add the mail settings:
+  ```powershell
+  .\Get-MfaStatusReport.ps1 -SendEmail -SmtpServer smtp.yourdomain -MailFrom reports@yourdomain -MailTo it@yourdomain
+  ```
+  Add `-SmtpPort`, `-SmtpUseSsl` and `-SmtpCredential (Get-Credential)` if your mail server needs them.
+
+The standalone files are generated from the toolkit scripts by `build/Build-Standalone.ps1`. Don't edit them directly: change the toolkit script or `Shared/Common.ps1`, then run `.\build\Build-Standalone.ps1` to regenerate them.
+
+## Requirements
+
+- Windows PowerShell 5.1 or PowerShell 7+.
+- **AD scripts:** the ActiveDirectory module (RSAT: Active Directory Domain Services tools), or run them on a domain controller.
+- **Microsoft 365 script:** the Microsoft Graph module (`Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`), and an account with Global Reader, or with both Reports Reader and Security Reader.
+- **Remote server checks:** WinRM enabled on the target servers, and an account with local admin rights on them.
+  - The health check falls back to DCOM if WinRM fails.
+
+## Toolkit setup
+
+1. **Clone** the repository (`git clone https://github.com/nafthan/powershell-scripts.git`) or download it to the server or admin PC that will run the scripts.
+
+2. **Unblock the files** if you downloaded a zip:
+   ```powershell
+   Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File
+   ```
+
+3. **Create your config** from the template:
+   ```powershell
+   Copy-Item .\config.example.psd1 .\config.psd1
+   notepad .\config.psd1
+   ```
+   - Replace every placeholder (`example.com`, `SERVER01`, `<...>`) with your real values.
+   - `config.psd1` is in `.gitignore`, so it is never committed.
+   - The scripts warn you if a setting they use still contains a placeholder.
+
+4. **Optional: SMTP authentication.** If your mail relay needs a login, create an encrypted credential file. Run this as the account that will run the scripts:
+   ```powershell
+   Get-Credential | Export-Clixml -Path .\smtp.cred.xml
+   ```
+   Then set `CredentialFile = 'smtp.cred.xml'` in the Email section.
+   - The file can only be decrypted by that user on that machine.
+   - `*.cred.xml` is in `.gitignore`.
+
+Reports are saved to `Reports\` in the toolkit folder by default. Change this with `General.OutputFolder`.
 
 ## Usage
 
-Every setting in `config.psd1` can be overridden with the matching parameter, and `Get-Help .\<script>.ps1 -Full` lists them all.
+Every setting in `config.psd1` can be overridden with the matching parameter. Run `Get-Help .\<script>.ps1 -Full` for every option.
 
+### Folder size report
 ```powershell
-.\FileServer\Find-LongPaths.ps1 -Path '\\FILESERVER01\Shares' -OutputFile 'C:\Temp\LongPaths.xlsx'
+.\FileServer\Get-FolderSizeReport.ps1 -Path '\\FILESERVER01\Shares' -Depth 2
 .\FileServer\Get-FolderSizeReport.ps1 -Path 'D:\Data' -Depth 3 -Top 100
-.\FileServer\Get-NtfsPermissionsAudit.ps1 -Path '\\FILESERVER01\Shares\Finance' -MaxDepth 3
-
-.\ActiveDirectory\Get-InactiveAccountsReport.ps1                            # report only
-.\ActiveDirectory\Get-InactiveAccountsReport.ps1 -DisableAccounts -WhatIf   # preview changes
-.\ActiveDirectory\Get-PasswordExpiryReport.ps1 -NotifyUsers -TestRecipient 'you@yourdomain'
-
-.\ServerHealth\Invoke-DailyHealthCheck.ps1 -SendEmail -OnlyEmailOnIssues
-.\ServerHealth\Get-CertificateExpiryReport.ps1 -Endpoint 'https://intranet.yourdomain' -SendEmail
-
-.\Network\Get-OpenPortReport.ps1 -ComputerName SERVER01, SERVER02
-.\Security\Get-RiskyAccountReport.ps1 -SendEmail
 ```
+Sheets: **Folder Sizes**, **Access Errors**, **Summary**. Each folder's size includes everything below it.
 
-| Script | Worth knowing |
-|---|---|
-| Find-LongPaths | Flags anything over 259 characters (`-MaxLength` to change it). Folders it can't read go on their own sheet, so you know what the scan missed |
-| NTFS audit | The top folder is listed in full; subfolders only show entries that differ from their parent. `-AllEntries` lists everything |
-| Inactive accounts | Report-only unless you add `-DisableAccounts`, and even then it asks before each account. Domain controllers are never touched |
-| Password expiry | Users are only emailed on the days in `PasswordExpiry.NotifyOnDays`, so a daily run doesn't nag them every day |
-| Certificate expiry | Endpoint checks read the certificate the site is actually serving, which catches a site still serving the old one after a renewal |
-| Open ports | Results show what's reachable from wherever you run it. Run it from a user VLAN as well as the server VLAN to compare |
-| Risky accounts | Read-only. Known exceptions go in `RiskyAccounts.AcceptedRisks`; they stay in the report but don't trigger alerts |
+### NTFS permissions audit
+```powershell
+.\FileServer\Get-NtfsPermissionsAudit.ps1 -Path '\\FILESERVER01\Shares\Finance' -MaxDepth 3
+.\FileServer\Get-NtfsPermissionsAudit.ps1 -Path 'D:\Shares\HR' -MaxDepth -1 -AllEntries
+```
+Sheets: **Permissions**, **Flagged**, **Access Errors**, **Summary**.
+- The top folder is listed in full.
+- Subfolders only show entries that differ from their parent, which keeps the report readable.
+- Use `-AllEntries` to list everything.
 
-### Scheduling
+### Inactive accounts
+```powershell
+.\ActiveDirectory\Get-InactiveAccountsReport.ps1                                   # report only
+.\ActiveDirectory\Get-InactiveAccountsReport.ps1 -DisableAccounts -WhatIf          # preview changes
+.\ActiveDirectory\Get-InactiveAccountsReport.ps1 -DisableAccounts                  # asks before each account
+```
+- It is report-only unless you add `-DisableAccounts`.
+- Disabled accounts get a description noting the date and reason, and are moved to `ActiveDirectory.DisabledOU` if that is set.
+- Domain controllers are never touched.
+- Last logon comes from `lastLogonTimestamp`, which can be up to 14 days behind the real last logon.
 
-Run them as scheduled tasks under a service account with the rights each script needs, for example the health check every morning:
+### Password expiry
+```powershell
+.\ActiveDirectory\Get-PasswordExpiryReport.ps1 -WarningDays 21
+.\ActiveDirectory\Get-PasswordExpiryReport.ps1 -NotifyUsers -TestRecipient 'you@yourdomain'   # all reminders to you
+.\ActiveDirectory\Get-PasswordExpiryReport.ps1 -NotifyUsers -SendReport                       # daily task
+```
+- Users are only emailed on the days listed in `PasswordExpiry.NotifyOnDays`, so a daily run doesn't email them every day.
+- Edit the help-desk contact and instructions in the config.
+
+### Daily health check
+```powershell
+.\ServerHealth\Invoke-DailyHealthCheck.ps1 -ComputerName SERVER01, SERVER02
+.\ServerHealth\Invoke-DailyHealthCheck.ps1 -SendEmail -OnlyEmailOnIssues
+```
+- Each server is marked OK, Warning or Critical, using the thresholds in the `HealthCheck` section.
+- Automatic services that are normally stopped are listed in `HealthCheck.ExcludeServices`. Add any of your own that cause false alerts.
+
+### Certificate expiry
+```powershell
+.\ServerHealth\Get-CertificateExpiryReport.ps1 -ComputerName WEB01 -Endpoint 'https://intranet.yourdomain'
+.\ServerHealth\Get-CertificateExpiryReport.ps1 -SendEmail          # emails only if something is expiring
+```
+- Endpoint checks read the certificate the site is actually serving. They catch sites still serving an old certificate after a renewal.
+
+### Open port check
+```powershell
+.\Network\Get-OpenPortReport.ps1 -ComputerName SERVER01, SERVER02
+.\Network\Get-OpenPortReport.ps1 -ComputerName SERVER01 -Port 80, 443, 3389
+.\Network\Get-OpenPortReport.ps1 -SendEmail          # emails only if there are findings
+```
+Each port is reported as **Open**, **Closed** (refused) or **Filtered** (no reply, usually a firewall). Findings:
+- **High:** a risky service is open (`PortCheck.RiskyPorts`, e.g. Telnet, FTP, VNC).
+- **Medium:** a port is open but not in the server's `PortCheck.Allowed` list.
+- **Low:** an allowed port isn't reachable.
+
+Results show what's reachable from the machine running the script. Run it from different network segments to compare what users and servers can reach. Only scan systems you're responsible for.
+
+### Microsoft 365 MFA report
+```powershell
+.\M365\Get-MfaStatusReport.ps1
+.\M365\Get-MfaStatusReport.ps1 -IncludeGuests -IncludePerUserMfaState
+.\M365\Get-MfaStatusReport.ps1 -UseDeviceCode          # sign in from a server without a browser
+.\M365\Get-MfaStatusReport.ps1 -SendEmail
+```
+Read-only. Sheets: **MFA Status**, **Needs Attention**, **Admins**, **Methods**, **Conditional Access**, **Errors**, **Summary**.
+
+- **The first run** asks a Global Administrator to consent to these read-only Graph permissions: User.Read.All, AuditLog.Read.All, UserAuthenticationMethod.Read.All, Policy.Read.All and RoleManagement.Read.Directory.
+- **Licensing:** the MFA registration report and last sign-in dates need **Entra ID P1 or P2**, which is included in Microsoft 365 Business Premium and E3/E5.
+  - Without P1/P2, the script reads each user's methods one by one instead. This is slower, and last sign-in dates won't be available.
+  - Eligible (PIM) admin roles need P2.
+  - Anything unavailable is listed on the **Errors** sheet.
+- **Risk ratings:**
+  - **Critical:** an admin with no MFA.
+  - **High:** an enabled user with no MFA.
+  - **Medium:** SMS/voice-only MFA, or a method not allowed by policy.
+  - **Low:** an admin without a phishing-resistant method, a guest with no MFA, or a user who has never signed in or has no sign-in for `M365.StaleDays`.
+- **Registered isn't enforced.** "Registered" means the user has set up MFA. Whether it's required at sign-in depends on security defaults or Conditional Access, which the report also checks.
+- **Scheduled runs:** use app-only sign-in with a certificate. Create an Entra app registration with the permissions above as *application* permissions, then set `M365.TenantId`, `ClientId` and `CertificateThumbprint`.
+
+### Risky account settings
+```powershell
+.\Security\Get-RiskyAccountReport.ps1
+.\Security\Get-RiskyAccountReport.ps1 -SearchBase 'OU=Service Accounts,DC=corp,DC=example,DC=com' -SendEmail
+```
+- Read-only; any domain user can run it.
+- Findings are rated High, Medium or Low, each with a recommended fix.
+- Members of Domain Admins, Administrators and the other built-in admin groups, including through nested groups, are treated as privileged, and their findings rated higher.
+- Known, accepted risks can be listed in `RiskyAccounts.AcceptedRisks`. They stay in the report marked **Accepted**, but don't count towards totals or emails.
+
+## Scheduling
+
+Create a scheduled task that runs as a service account with the rights each script needs. For example, the daily health check at 07:30:
 
 ```powershell
 $action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
@@ -103,46 +203,31 @@ Register-ScheduledTask -TaskName 'Daily health check' -Action $action -Trigger $
            -User 'DOMAIN\svc_reports' -Password (Read-Host 'Password') -RunLevel Highest
 ```
 
-If you use an SMTP credential file, create it while logged on as the task account, because only that account can decrypt it.
+- When run with `-File`, list parameters can be passed as one comma-separated value, e.g. `-ComputerName "SERVER01,SERVER02"`.
+- If you use `Email.CredentialFile`, create it while logged on as the task account, because only that account can decrypt it.
 
-## How it works
+## Publishing safely
 
-Every script loads `Shared/Common.ps1`, which holds the parts they all need.
+- Commit `config.example.psd1` and never `config.psd1`.
+- Before pushing, run `git status` and check that no `config.psd1`, `*.cred.xml` or report files are staged.
+- If you add a setting, put a placeholder for it in `config.example.psd1`. Use the reserved `example.com` domain, or `<ANGLE BRACKETS>` for free text.
+- For extra safety, run a secret scanner such as [gitleaks](https://github.com/gitleaks/gitleaks) before pushing.
 
-| Part | What it does |
-|---|---|
-| `Shared/Common.ps1` | Loads `config.psd1` and warns about leftover placeholders, writes `.xlsx` workbooks, builds email-friendly HTML tables and sends mail |
-| `config.example.psd1` | Every environment-specific setting, as placeholders. Copied to `config.psd1`, which is git-ignored |
-| `FileServer/`, `ActiveDirectory/`, `ServerHealth/`, `Network/`, `Security/` | One script per report |
+## Layout
 
-An `.xlsx` file is a zip of XML files, so the workbook writer builds one directly. Numbers are stored as real numbers, so you can sort and filter them, and text is escaped properly so paths containing `&`, `<` or quotes don't break the file.
-
-The file system scans read paths with the `\\?\` prefix, so they can still get into folders that are already too deep for Explorer. Find-LongPaths walks the tree with its own stack rather than recursion, so one unreadable folder is logged and skipped instead of stopping the run, and junctions are reported but never followed, so a loop can't trap it.
-
-## Security and privacy
-
-- No real environment details are in the repo. `config.psd1`, `*.cred.xml` and generated reports are all in `.gitignore`.
-- Passwords never go in files. SMTP logins use `Export-Clixml`, which Windows encrypts so only that user on that machine can read it.
-- Anything that changes something is opt-in. The inactive accounts script needs `-DisableAccounts`, supports `-WhatIf` and confirms each account.
-- The port check only makes a TCP connection and sends no data. Only scan systems you're responsible for.
-
-## Testing
-
-I checked every script with PowerShell's own parser and PSScriptAnalyzer, including its compatibility check for both 5.1 and 7, and tested the logic that doesn't need a real domain. The workbook writer was tested with awkward data and opened in two spreadsheet libraries. The NTFS rights logic was tested against real permission values, which caught Windows storing the Synchronize bit on some rights and not others. The port check ran against live test listeners and a public host, and the risky account audit against a fake domain with one account for each risky setting.
-
-Testing under PowerShell 7 also caught a difference in how the scripts created lists, which Windows PowerShell 5.1 didn't have. Every script was fixed and the earlier tests re-run under both.
-
-## Limitations
-
-- Last logon comes from `lastLogonTimestamp`, which can be up to 14 days behind the real last logon.
-- Port results only show what's reachable from the machine running the script.
-- The remote checks need WinRM (or DCOM for the health check) and admin rights on the target servers.
-- Run each script by hand once in your environment before scheduling it.
+```
+├── Standalone/             single-file versions of every script (generated)
+├── build/                  Build-Standalone.ps1 - regenerates Standalone/
+├── config.example.psd1     settings template (placeholders only)
+├── Shared/Common.ps1       config loading, Excel writer, HTML and email helpers
+├── FileServer/
+├── ActiveDirectory/
+├── ServerHealth/
+├── Network/
+├── M365/
+└── Security/
+```
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
-
-<div align="center">
-<sub><a href="https://nafthan.co.uk">nafthan.co.uk</a></sub>
-</div>
+MIT - see [LICENSE](LICENSE).
