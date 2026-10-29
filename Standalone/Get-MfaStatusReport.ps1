@@ -14,10 +14,6 @@
     Repo   : https://github.com/nafthan/powershell-scripts
     Version: standalone - single file, no config needed. The full toolkit (shared config) is in the repo.
     Requires: Microsoft.Graph.Authentication module, Global Reader (or Reports Reader + Security Reader)
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
