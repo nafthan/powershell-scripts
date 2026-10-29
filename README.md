@@ -1,10 +1,25 @@
-# PowerShell Scripts
+<div align="center">
 
-By **nafthan** - [nafthan.co.uk](https://nafthan.co.uk)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.gif">
+  <img alt="PowerShell Scripts" src="docs/banner-light.gif" width="100%">
+</picture>
 
-Day-to-day reporting scripts for Windows servers, file shares, Active Directory and Microsoft 365.
+[nafthan.co.uk](https://nafthan.co.uk)
+
+</div>
+
+## About
+
+Day to day reporting scripts for Windows servers, file shares, Active Directory and Microsoft 365.
+
+These started as one script. I needed to find every path on a file share that was over the Windows 260-character limit, and it grew from there into the reports I actually reach for during the week: who has access to what, which accounts haven't logged on in months, whose password is about to expire, and whether the servers are healthy.
+
+Two decisions shaped all of it. First, nothing needs installing: the scripts write real `.xlsx` workbooks themselves, so the machine running them doesn't need Excel or any extra modules. Second, it's meant to live in a public repo, so there are no server names, domains or email addresses in the scripts at all. Everything specific to an environment lives in one config file that git never sees.
 
 Every report is saved as an Excel workbook (`.xlsx`) or HTML page, and can be emailed. Excel and extra PowerShell modules are not needed on the machine running the scripts.
+
+## Scripts
 
 | Area | Script | What it does |
 |---|---|---|
