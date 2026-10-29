@@ -10,10 +10,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Version: standalone - single file, no config needed. The full toolkit (shared config) is in the repo.
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
