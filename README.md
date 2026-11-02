@@ -221,13 +221,6 @@ Register-ScheduledTask -TaskName 'Daily health check' -Action $action -Trigger $
 - When run with `-File`, list parameters can be passed as one comma-separated value, e.g. `-ComputerName "SERVER01,SERVER02"`.
 - If you use `Email.CredentialFile`, create it while logged on as the task account, because only that account can decrypt it.
 
-## Publishing safely
-
-- Commit `config.example.psd1` and never `config.psd1`.
-- Before pushing, run `git status` and check that no `config.psd1`, `*.cred.xml` or report files are staged.
-- If you add a setting, put a placeholder for it in `config.example.psd1`. Use the reserved `example.com` domain, or `<ANGLE BRACKETS>` for free text.
-- For extra safety, run a secret scanner such as [gitleaks](https://github.com/gitleaks/gitleaks) before pushing.
-
 ## Layout
 
 ```
