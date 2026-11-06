@@ -33,8 +33,6 @@ $script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
 $script:IsWindowsHost = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
 
-$script:HtmlFont = 'font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
-
 function Get-ToolkitConfig {
     # Standalone: no config file. Settings come from parameters and built-in defaults.
     $cfg = @{ General = @{ OutputFolder = (Get-Location).Path } }
@@ -44,7 +42,7 @@ function Get-ToolkitConfig {
             To = @($MailTo | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         }
     }
-    
+
     return $cfg
 }
 
@@ -133,8 +131,8 @@ function Get-ColumnLetter([int]$Index) {
     $n = $Index + 1
     while ($n -gt 0) {
         $rem  = ($n - 1) % 26
-        $name = [char](65 + $rem) + $name
-        $n    = [math]::Floor(($n - 1) / 26)
+        $name = [string][char](65 + [int]$rem) + $name
+        $n    = [int][math]::Floor(($n - 1) / 26)
     }
     return $name
 }

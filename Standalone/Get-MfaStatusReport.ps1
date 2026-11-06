@@ -47,9 +47,35 @@ $script:ToolkitRoot   = $PSScriptRoot
 
 $script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
-$script:IsWindowsHost = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
-
 $script:HtmlFont = 'font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
+
+$methodNames = @{
+    email                            = 'Email (SSPR only)'
+    mobilePhone                      = 'Mobile phone (SMS/voice)'
+    alternateMobilePhone             = 'Alternate mobile phone'
+    officePhone                      = 'Office phone'
+    microsoftAuthenticatorPush       = 'Microsoft Authenticator'
+    microsoftAuthenticatorPasswordless = 'Authenticator passwordless'
+    softwareOneTimePasscode          = 'Software OATH token'
+    hardwareOneTimePasscode          = 'Hardware OATH token'
+    windowsHelloForBusiness          = 'Windows Hello for Business'
+    fido2SecurityKey                 = 'FIDO2 security key'
+    passKeyDeviceBound               = 'Passkey'
+    passKeyDeviceBoundAuthenticator  = 'Passkey (Authenticator)'
+    passKeyDeviceBoundWindowsHello   = 'Passkey (Windows Hello)'
+    temporaryAccessPass              = 'Temporary Access Pass'
+    securityQuestion                 = 'Security questions'
+    macOsSecureEnclaveKey            = 'macOS Platform SSO'
+    x509Certificate                  = 'Certificate'
+}
+
+$phoneMethods     = @('mobilePhone', 'alternateMobilePhone', 'officePhone')
+
+$appMethods       = @('microsoftAuthenticatorPush', 'microsoftAuthenticatorPasswordless', 'softwareOneTimePasscode', 'hardwareOneTimePasscode')
+
+$phishResistant   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|x509|certificate)'
+
+$passwordlessRx   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|microsoftAuthenticatorPasswordless)'
 
 function Get-ToolkitConfig {
     # Standalone: no config file. Settings come from parameters and built-in defaults.
@@ -60,7 +86,7 @@ function Get-ToolkitConfig {
             To = @($MailTo | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         }
     }
-    
+
     return $cfg
 }
 
@@ -121,8 +147,8 @@ function Get-ColumnLetter([int]$Index) {
     $n = $Index + 1
     while ($n -gt 0) {
         $rem  = ($n - 1) % 26
-        $name = [char](65 + $rem) + $name
-        $n    = [math]::Floor(($n - 1) / 26)
+        $name = [string][char](65 + [int]$rem) + $name
+        $n    = [int][math]::Floor(($n - 1) / 26)
     }
     return $name
 }
@@ -277,10 +303,10 @@ function New-SummaryRows([System.Collections.IDictionary]$Items) {
 
 function Get-StatusStyle([string]$Status) {
     switch -Regex ($Status) {
-        '^(Critical|Expired|Error|Unreachable|Failed|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
         '^(Warning|Expiring|Medium)'                   { return 'background-color:#fff3cd;color:#664d03;font-weight:600;' }
         '^Low'                                         { return 'background-color:#e7f1ff;color:#084298;font-weight:600;' }
-        '^OK'                                          { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
+        '^(OK|Done|Requested)'                         { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
         default                                        { return '' }
     }
 }
@@ -405,19 +431,63 @@ function Send-ToolkitMail {
     }
 }
 
-#endregion
-$config = Get-ToolkitConfig
+function Connect-ToolkitGraph {
+    <#
+        Connects to Microsoft Graph, or reuses an existing connection.
+        Sign-in settings come from the calling script's parameters (-Bound $PSBoundParameters) first,
+        then built-in defaults. Returns $true if this call made the connection,
+        so the caller knows to run Disconnect-MgGraph at the end.
+    #>
+    param(
+        [hashtable]$Config,
+        [string[]]$Scopes,
+        $Bound,
+        [string]$RoleHint = 'Global Reader'
+    )
+    $boundKeys = if ($Bound) { @($Bound.Keys) } else { @() }
+    $setting = { param($Name, $Default) if ($boundKeys -contains $Name) { $Bound[$Name] } else { Get-Setting $Config 'M365' $Name $Default } }
+    $tenantId   = & $setting 'TenantId' ''
+    $clientId   = & $setting 'ClientId' ''
+    $thumbprint = & $setting 'CertificateThumbprint' ''
+    $deviceCode = [bool](& $setting 'UseDeviceCode' $false)
 
-if (-not $PSBoundParameters.ContainsKey('TenantId'))              { $TenantId              = Get-Setting $config 'M365' 'TenantId' '' }
-if (-not $PSBoundParameters.ContainsKey('ClientId'))              { $ClientId              = Get-Setting $config 'M365' 'ClientId' '' }
-if (-not $PSBoundParameters.ContainsKey('CertificateThumbprint')) { $CertificateThumbprint = Get-Setting $config 'M365' 'CertificateThumbprint' '' }
-if (-not $PSBoundParameters.ContainsKey('IncludeGuests'))         { $IncludeGuests         = [bool](Get-Setting $config 'M365' 'IncludeGuests' $false) }
-if (-not $PSBoundParameters.ContainsKey('StaleDays'))             { $StaleDays             = [int](Get-Setting $config 'M365' 'StaleDays' 90) }
-$newAccountDays = [int](Get-Setting $config 'M365' 'NewAccountGraceDays' 14)
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
+        throw 'The Microsoft Graph PowerShell module is not installed. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+    }
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 
-$scopes = @('User.Read.All', 'AuditLog.Read.All', 'UserAuthenticationMethod.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory')
+    $context = Get-MgContext
+    if ($context -and (-not $tenantId -or $context.TenantId -eq $tenantId -or $tenantId -like '*.*')) {
+        Write-Host "Using existing Microsoft Graph connection ($($context.Account)$($context.AppName))."
+        if ($context.AuthType -eq 'Delegated') {
+            $missing = @($Scopes | Where-Object { $context.Scopes -notcontains $_ })
+            if ($missing.Count) { Write-Warning "Current connection is missing scope(s): $($missing -join ', '). Some sections may be empty. Run Disconnect-MgGraph and try again." }
+        }
+        return $false
+    }
 
-# --- Graph helpers --------------------------------------------------------
+    $connect = @{ NoWelcome = $true; ErrorAction = 'Stop' }
+    if ($tenantId) { $connect.TenantId = $tenantId }
+    if ($clientId -and $thumbprint) {
+        if (-not $tenantId) { throw 'App-only sign-in needs a tenant. Use -TenantId.' }
+        $connect.ClientId = $clientId
+        $connect.CertificateThumbprint = $thumbprint
+        Write-Host 'Connecting to Microsoft Graph (app-only, certificate)...'
+    }
+    else {
+        $connect.Scopes = $Scopes
+        Write-Host "Connecting to Microsoft Graph - sign in with an account that has $RoleHint..."
+        if ($deviceCode) {
+            $connect.UseDeviceCode = $true
+            Write-Host 'Open the link below in any browser and enter the code shown.' -ForegroundColor Cyan
+        }
+        else {
+            Write-Host 'If the sign-in window goes blank or hangs, press Ctrl+C and run again with -UseDeviceCode.' -ForegroundColor Cyan
+        }
+    }
+    Connect-MgGraph @connect | Out-Null
+    return $true
+}
 
 function Invoke-Graph([string]$Uri) {
     # GET with a simple retry for throttling and transient errors
@@ -465,36 +535,6 @@ function Get-Latest([object[]]$Dates) {
     return ($valid | Sort-Object -Descending | Select-Object -First 1)
 }
 
-# --- Authentication method names ------------------------------------------
-
-$methodNames = @{
-    email                            = 'Email (SSPR only)'
-    mobilePhone                      = 'Mobile phone (SMS/voice)'
-    alternateMobilePhone             = 'Alternate mobile phone'
-    officePhone                      = 'Office phone'
-    microsoftAuthenticatorPush       = 'Microsoft Authenticator'
-    microsoftAuthenticatorPasswordless = 'Authenticator passwordless'
-    softwareOneTimePasscode          = 'Software OATH token'
-    hardwareOneTimePasscode          = 'Hardware OATH token'
-    windowsHelloForBusiness          = 'Windows Hello for Business'
-    fido2SecurityKey                 = 'FIDO2 security key'
-    passKeyDeviceBound               = 'Passkey'
-    passKeyDeviceBoundAuthenticator  = 'Passkey (Authenticator)'
-    passKeyDeviceBoundWindowsHello   = 'Passkey (Windows Hello)'
-    temporaryAccessPass              = 'Temporary Access Pass'
-    securityQuestion                 = 'Security questions'
-    macOsSecureEnclaveKey            = 'macOS Platform SSO'
-    x509Certificate                  = 'Certificate'
-}
-$defaultMethodNames = @{
-    push = 'Authenticator push'; oath = 'OATH code'; sms = 'SMS'; voiceMobile = 'Phone call (mobile)'
-    voiceAlternateMobile = 'Phone call (alternate)'; voiceOffice = 'Phone call (office)'; none = ''
-}
-$phoneMethods     = @('mobilePhone', 'alternateMobilePhone', 'officePhone')
-$appMethods       = @('microsoftAuthenticatorPush', 'microsoftAuthenticatorPasswordless', 'softwareOneTimePasscode', 'hardwareOneTimePasscode')
-$phishResistant   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|x509|certificate)'
-$passwordlessRx   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|microsoftAuthenticatorPasswordless)'
-
 function Test-StrongMethod([string]$Method) {
     return ($phoneMethods -contains $Method) -or ($appMethods -contains $Method) -or ($Method -match $phishResistant) -or ($Method -match $passwordlessRx)
 }
@@ -520,44 +560,27 @@ function ConvertFrom-MethodObject($Method) {
     }
 }
 
+#endregion
+$config = Get-ToolkitConfig
+
+if (-not $PSBoundParameters.ContainsKey('IncludeGuests'))         { $IncludeGuests         = [bool](Get-Setting $config 'M365' 'IncludeGuests' $false) }
+if (-not $PSBoundParameters.ContainsKey('StaleDays'))             { $StaleDays             = [int](Get-Setting $config 'M365' 'StaleDays' 90) }
+$newAccountDays = [int](Get-Setting $config 'M365' 'NewAccountGraceDays' 14)
+
+# Default MFA method names from the registration report
+$defaultMethodNames = @{
+    push = 'Authenticator push'; oath = 'OATH code'; sms = 'SMS'; voiceMobile = 'Phone call (mobile)'
+    voiceAlternateMobile = 'Phone call (alternate)'; voiceOffice = 'Phone call (office)'; none = ''
+}
+
+$scopes = @('User.Read.All', 'AuditLog.Read.All', 'UserAuthenticationMethod.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory', 'Organization.Read.All')
+
 # --- Main -----------------------------------------------------------------
 
 if ($MyInvocation.InvocationName -ne '.') {
 
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-        throw 'The Microsoft Graph PowerShell module is not installed. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
-    }
-    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
-
-    # --- Connect ----------------------------------------------------------
-
-    $connectedHere = $false
+    $connectedHere = Connect-ToolkitGraph -Config $config -Scopes $scopes -Bound $PSBoundParameters -RoleHint 'Global Reader (or Reports Reader + Security Reader)'
     $context = Get-MgContext
-    if ($context -and (-not $TenantId -or $context.TenantId -eq $TenantId -or $TenantId -like '*.*')) {
-        Write-Host "Using existing Graph connection ($($context.Account)$($context.AppName))."
-        if ($context.AuthType -eq 'Delegated') {
-            $missing = @($scopes | Where-Object { $context.Scopes -notcontains $_ })
-            if ($missing.Count) { Write-Warning "Current connection is missing scope(s): $($missing -join ', '). Some sections may be empty. Run Disconnect-MgGraph and try again." }
-        }
-    }
-    else {
-        $connect = @{ NoWelcome = $true; ErrorAction = 'Stop' }
-        if ($TenantId) { $connect.TenantId = $TenantId }
-        if ($ClientId -and $CertificateThumbprint) {
-            if (-not $TenantId) { throw 'App-only sign-in needs a tenant. Use -TenantId.' }
-            $connect.ClientId = $ClientId
-            $connect.CertificateThumbprint = $CertificateThumbprint
-            Write-Host 'Connecting to Microsoft Graph (app-only, certificate)...'
-        }
-        else {
-            $connect.Scopes = $scopes
-            if ($UseDeviceCode) { $connect.UseDeviceCode = $true }
-            Write-Host 'Connecting to Microsoft Graph - sign in with an account that has Global Reader (or Reports Reader + Security Reader)...'
-        }
-        Connect-MgGraph @connect | Out-Null
-        $connectedHere = $true
-        $context = Get-MgContext
-    }
 
     $now        = Get-Date
     $reportPath = New-ReportPath -Config $config -Prefix 'MfaStatus' -OutputFile $OutputFile
@@ -581,7 +604,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         # --- Users --------------------------------------------------------
 
         Write-Host 'Getting users...'
-        $select = 'id,displayName,userPrincipalName,mail,accountEnabled,userType,createdDateTime,assignedLicenses,onPremisesSyncEnabled,department,jobTitle'
+        $select = 'id,displayName,userPrincipalName,mail,accountEnabled,userType,createdDateTime,assignedLicenses,onPremisesSyncEnabled,lastPasswordChangeDateTime,department,jobTitle'
         $signInAvailable = $true
         try {
             $users = @(Get-GraphAll ("v1.0/users?`$select=$select,signInActivity&`$top=500"))
@@ -598,6 +621,14 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $userById = @{}
         foreach ($u in $users) { $userById[$u.id] = $u }
+
+        # --- Licence names -----------------------------------------------
+
+        $skuNames = @{}
+        try {
+            foreach ($s in (Get-GraphAll 'v1.0/subscribedSkus?$select=skuId,skuPartNumber')) { $skuNames["$($s.skuId)"] = $s.skuPartNumber }
+        }
+        catch { Add-ReportError 'Licences' "Licence names unavailable, so SKU IDs are shown (needs Organization.Read.All): $($_.Exception.Message)" }
 
         # --- MFA registration --------------------------------------------
 
@@ -812,8 +843,10 @@ if ($MyInvocation.InvocationName -ne '.') {
                 SignInStatus             = if ($u.accountEnabled) { 'Allowed' } else { 'Blocked' }
                 UserType                 = $u.userType
                 Licensed                 = @($u.assignedLicenses).Count -gt 0
+                Licenses                 = (@($u.assignedLicenses | ForEach-Object { $id = "$($_.skuId)"; if ($skuNames.ContainsKey($id)) { $skuNames[$id] } else { $id } } | Sort-Object) -join ', ')
                 AccountSource            = if ($u.onPremisesSyncEnabled) { 'Synced (AD)' } else { 'Cloud' }
                 Created                  = $created
+                PasswordLastChanged      = ConvertTo-LocalTime $u.lastPasswordChangeDateTime
                 LastSignIn               = if ($signInAvailable) { $lastSignIn } else { 'Unavailable' }
                 DaysSinceSignIn          = $daysSince
                 LastInteractiveSignIn    = $lastInteractive
@@ -879,10 +912,10 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         # --- Export ------------------------------------------------------
 
-        $mainHeaders = @('DisplayName', 'UserPrincipalName', 'Email', 'SignInStatus', 'LastSignIn', 'DaysSinceSignIn', 'Created', 'MfaStatus', 'MethodsRegistered',
+        $mainHeaders = @('DisplayName', 'UserPrincipalName', 'Email', 'SignInStatus', 'LastSignIn', 'DaysSinceSignIn', 'Created', 'PasswordLastChanged', 'MfaStatus', 'MethodsRegistered',
                          'DefaultMethod', 'PhishingResistant', 'MfaCapable', 'PasswordlessCapable', 'SsprRegistered', 'IsAdmin', 'AdminRoles', 'Risk', 'Issues',
-                         'UserType', 'Licensed', 'AccountSource', 'LastInteractiveSignIn', 'LastNonInteractiveSignIn', 'Department', 'JobTitle')
-        $mainWidths  = @(26, 34, 32, 13, 18, 15, 18, 15, 50, 26, 17, 12, 19, 15, 9, 40, 10, 50, 10, 9, 13, 21, 24, 20, 24)
+                         'UserType', 'Licensed', 'Licenses', 'AccountSource', 'LastInteractiveSignIn', 'LastNonInteractiveSignIn', 'Department', 'JobTitle')
+        $mainWidths  = @(26, 34, 32, 13, 18, 15, 18, 20, 15, 50, 26, 17, 12, 19, 15, 9, 40, 10, 50, 10, 9, 40, 13, 21, 24, 20, 24)
         if ($IncludePerUserMfaState) {
             $idx = [array]::IndexOf($mainHeaders, 'MfaCapable')
             $mainHeaders = $mainHeaders[0..$idx] + 'PerUserMfa' + $mainHeaders[($idx + 1)..($mainHeaders.Count - 1)]

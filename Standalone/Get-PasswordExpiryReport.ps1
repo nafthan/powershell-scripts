@@ -48,8 +48,6 @@ $script:ToolkitRoot   = $PSScriptRoot
 
 $script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
-$script:IsWindowsHost = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
-
 $script:HtmlFont = 'font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
 
 function Get-ToolkitConfig {
@@ -130,8 +128,8 @@ function Get-ColumnLetter([int]$Index) {
     $n = $Index + 1
     while ($n -gt 0) {
         $rem  = ($n - 1) % 26
-        $name = [char](65 + $rem) + $name
-        $n    = [math]::Floor(($n - 1) / 26)
+        $name = [string][char](65 + [int]$rem) + $name
+        $n    = [int][math]::Floor(($n - 1) / 26)
     }
     return $name
 }
@@ -286,10 +284,10 @@ function New-SummaryRows([System.Collections.IDictionary]$Items) {
 
 function Get-StatusStyle([string]$Status) {
     switch -Regex ($Status) {
-        '^(Critical|Expired|Error|Unreachable|Failed|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
         '^(Warning|Expiring|Medium)'                   { return 'background-color:#fff3cd;color:#664d03;font-weight:600;' }
         '^Low'                                         { return 'background-color:#e7f1ff;color:#084298;font-weight:600;' }
-        '^OK'                                          { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
+        '^(OK|Done|Requested)'                         { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
         default                                        { return '' }
     }
 }

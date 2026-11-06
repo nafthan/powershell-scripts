@@ -13,11 +13,8 @@
     Author : nafthan
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
+    Version: standalone - single file, no config needed. The full toolkit (shared config) is in the repo.
     Requires: local administrator on the target; PowerShell remoting (WinRM) for -ComputerName
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
@@ -35,7 +32,206 @@ param(
     [string]$OutputPath
 )
 
-. ([System.IO.Path]::Combine($PSScriptRoot, '..', 'Shared', 'Common.ps1'))
+#region Shared helpers (copied in by build/Build-Standalone.ps1 - edit Shared/Common.ps1 in the repo instead)
+
+$script:ToolkitRoot   = $PSScriptRoot
+
+$script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
+
+$script:IsWindowsHost = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
+
+$script:HtmlFont = 'font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
+
+function Get-ToolkitConfig {
+    # Standalone: no config file. Settings come from parameters and built-in defaults.
+    $cfg = @{ General = @{ OutputFolder = (Get-Location).Path } }
+    if ($SmtpServer) {
+        $cfg.Email = @{
+            SmtpServer = $SmtpServer; Port = $SmtpPort; UseSsl = [bool]$SmtpUseSsl; From = $MailFrom
+            To = @($MailTo | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        }
+    }
+
+    return $cfg
+}
+
+function Get-Setting {
+    param([hashtable]$Config, [string]$Section, [string]$Key, $Default = $null)
+    $value = $null
+    if ($Config -and $Config.ContainsKey($Section) -and $Config[$Section] -is [hashtable] -and $Config[$Section].ContainsKey($Key)) {
+        $value = $Config[$Section][$Key]
+    }
+    if ($null -eq $value -or ($value -is [string] -and $value -eq '') -or ($value -is [array] -and $value.Count -eq 0)) { $value = $Default }
+    return $value
+}
+
+function Split-ListValue([string[]]$Value) {
+    <#
+        Accepts both -Param A, B and -Param 'A,B'. The second form is what you get when a
+        script is run with powershell.exe -File (for example from Task Scheduler).
+    #>
+    return @($Value | ForEach-Object { "$_" -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+function Resolve-ToolkitPath([string]$PathValue) {
+    <# Turns a relative path from the config into a full path under the toolkit root. #>
+    if (-not $PathValue) { return $PathValue }
+    if ([System.IO.Path]::IsPathRooted($PathValue)) { return $PathValue }
+    return [System.IO.Path]::GetFullPath((Join-Path $script:ToolkitRoot $PathValue))
+}
+
+function Get-StatusStyle([string]$Status) {
+    switch -Regex ($Status) {
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
+        '^(Warning|Expiring|Medium)'                   { return 'background-color:#fff3cd;color:#664d03;font-weight:600;' }
+        '^Low'                                         { return 'background-color:#e7f1ff;color:#084298;font-weight:600;' }
+        '^(OK|Done|Requested)'                         { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
+        default                                        { return '' }
+    }
+}
+
+function ConvertTo-HtmlTable {
+    <#
+        Builds a table with inline styles (works in Outlook).
+        -StatusColumn colours that cell by its value (OK / Warning / Critical ...).
+    #>
+    param(
+        $Rows,
+        [string[]]$Columns,
+        [string]$StatusColumn,
+        [string]$EmptyText = 'None.'
+    )
+    if ($null -eq $Rows -or @($Rows).Count -eq 0) {
+        return "<p style=`"$($script:HtmlFont)color:#555;`">$([System.Net.WebUtility]::HtmlEncode($EmptyText))</p>"
+    }
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<table cellpadding=`"6`" cellspacing=`"0`" style=`"border-collapse:collapse;$($script:HtmlFont)border:1px solid #d0d7de;margin-bottom:16px;`">")
+    [void]$sb.Append('<tr>')
+    foreach ($c in $Columns) {
+        [void]$sb.Append("<th style=`"background-color:#305496;color:#ffffff;text-align:left;border:1px solid #d0d7de;`">$([System.Net.WebUtility]::HtmlEncode($c))</th>")
+    }
+    [void]$sb.Append('</tr>')
+    $odd = $false
+    foreach ($row in $Rows) {
+        $odd = -not $odd
+        $bg  = if ($odd) { '#ffffff' } else { '#f6f8fa' }
+        [void]$sb.Append("<tr style=`"background-color:$bg;`">")
+        foreach ($c in $Columns) {
+            $val = $row.$c
+            if ($val -is [datetime]) { $val = $val.ToString('yyyy-MM-dd HH:mm') }
+            elseif ($val -is [bool]) { $val = if ($val) { 'Yes' } else { 'No' } }
+            $style = 'border:1px solid #d0d7de;vertical-align:top;'
+            if ($c -eq $StatusColumn) { $style += Get-StatusStyle "$val" }
+            [void]$sb.Append("<td style=`"$style`">$([System.Net.WebUtility]::HtmlEncode("$val"))</td>")
+        }
+        [void]$sb.Append('</tr>')
+    }
+    [void]$sb.Append('</table>')
+    return $sb.ToString()
+}
+
+function New-HtmlReport {
+    <#
+        Wraps sections into a full HTML page.
+        -Sections: array of @{ Heading = '...'; Html = '...' }
+    #>
+    param(
+        [string]$Title,
+        [string[]]$IntroLines,
+        [object[]]$Sections
+    )
+    $enc = { param($t) [System.Net.WebUtility]::HtmlEncode($t) }
+    $sb  = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<!DOCTYPE html><html><head><meta charset=`"utf-8`"><title>$(& $enc $Title)</title></head>")
+    [void]$sb.Append("<body style=`"$($script:HtmlFont)color:#1f2328;background-color:#ffffff;margin:16px;`">")
+    [void]$sb.Append("<h2 style=`"font-family:Segoe UI,Arial,sans-serif;color:#305496;margin:0 0 8px 0;`">$(& $enc $Title)</h2>")
+    foreach ($line in $IntroLines) {
+        [void]$sb.Append("<p style=`"$($script:HtmlFont)margin:2px 0;`">$(& $enc $line)</p>")
+    }
+    foreach ($s in $Sections) {
+        [void]$sb.Append("<h3 style=`"font-family:Segoe UI,Arial,sans-serif;color:#1f2328;margin:20px 0 8px 0;`">$(& $enc $s.Heading)</h3>")
+        [void]$sb.Append($s.Html)
+    }
+    [void]$sb.Append("<p style=`"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#6e7781;margin-top:24px;`">Generated $(Get-Date -Format 'yyyy-MM-dd HH:mm') on $([System.Environment]::MachineName) by $(& $enc (Split-Path -Leaf "$($MyInvocation.PSCommandPath)")).</p>")
+    [void]$sb.Append('</body></html>')
+    return $sb.ToString()
+}
+
+function New-EvidenceFolder {
+    <# Creates <EvidenceFolder>\<Name>. Default location: SOC.EvidenceFolder, otherwise <OutputFolder>\Evidence. #>
+    param([hashtable]$Config, [string]$OutputPath, [string]$Name)
+    $root = $OutputPath
+    if (-not $root) {
+        $configured = Get-Setting $Config 'SOC' 'EvidenceFolder' ''
+        $root = if ($configured) { Resolve-ToolkitPath $configured } else { Join-Path (Resolve-ToolkitPath (Get-Setting $Config 'General' 'OutputFolder' 'Reports')) 'Evidence' }
+    }
+    $path = Join-Path $root ($Name -replace '[^\w\.-]', '_')
+    New-Item -ItemType Directory -Path $path -Force -WhatIf:$false -Confirm:$false | Out-Null
+    return (Resolve-Path -LiteralPath $path).Path
+}
+
+function ConvertTo-UtcText($Value) {
+    <# Dates as ISO 8601 UTC text, so evidence from different time zones lines up. #>
+    if ($null -eq $Value -or "$Value" -eq '') { return '' }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss') + 'Z' }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z' }
+    $dto = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse("$Value", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$dto)) {
+        return $dto.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
+    }
+    return "$Value"
+}
+
+function Export-EvidenceCsv {
+    <# Writes rows to <Folder>\<Name>.csv. Lists are joined with '; ' and dates converted to UTC. Returns the row count. #>
+    param([string]$Folder, [string]$Name, $Rows)
+    $file = Join-Path $Folder "$Name.csv"
+    $list = @($Rows | Where-Object { $null -ne $_ })
+    if (-not $list.Count) {
+        [System.IO.File]::WriteAllText($file, '', $script:Utf8NoBom)
+        return 0
+    }
+    $flat = foreach ($r in $list) {
+        $o = [ordered]@{}
+        foreach ($p in $r.PSObject.Properties) {
+            if ($p.Name -like 'PS*' -and $p.Name -in 'PSComputerName', 'PSShowComputerName', 'PSSourceJobInstanceId', 'RunspaceId') { continue }
+            $v = $p.Value
+            if ($v -is [datetime] -or $v -is [datetimeoffset]) { $v = ConvertTo-UtcText $v }
+            elseif ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { $v = (@($v) | ForEach-Object { "$_" }) -join '; ' }
+            $o[$p.Name] = $v
+        }
+        [pscustomobject]$o
+    }
+    $flat | Export-Csv -LiteralPath $file -NoTypeInformation -Encoding UTF8 -WhatIf:$false -Confirm:$false
+    return $list.Count
+}
+
+function Complete-EvidencePackage {
+    <#
+        Writes manifest.csv (SHA-256 of every file), zips the folder to <Folder>.zip and writes
+        <Folder>.zip.sha256. Record the zip hash in your case notes so the evidence can be shown to be unchanged.
+    #>
+    param([string]$Folder)
+    $files = @(Get-ChildItem -LiteralPath $Folder -File -Recurse | Where-Object { $_.Name -ne 'manifest.csv' })
+    $manifest = foreach ($f in $files) {
+        [pscustomobject]@{
+            File   = $f.FullName.Substring($Folder.Length).TrimStart('\', '/')
+            Bytes  = $f.Length
+            SHA256 = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+        }
+    }
+    @($manifest) | Export-Csv -LiteralPath (Join-Path $Folder 'manifest.csv') -NoTypeInformation -Encoding UTF8 -WhatIf:$false -Confirm:$false
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = "$Folder.zip"
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force -WhatIf:$false -Confirm:$false }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($Folder, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+    $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+    [System.IO.File]::WriteAllText("$zip.sha256", "$hash  $(Split-Path -Leaf $zip)`r`n", $script:Utf8NoBom)
+    return [pscustomobject]@{ Folder = $Folder; Zip = $zip; Sha256 = $hash; Files = $files.Count + 1 }
+}
+
+#endregion
 $config = Get-ToolkitConfig
 
 if (-not $PSBoundParameters.ContainsKey('Hours'))     { $Hours     = [int](Get-Setting $config 'SOC' 'TriageHours' 72) }
