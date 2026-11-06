@@ -21,8 +21,7 @@ function Get-ToolkitConfig {
     <# Loads config.psd1 from the toolkit root. Returns an empty hashtable if it doesn't exist. #>
     $path = Join-Path $script:ToolkitRoot 'config.psd1'
     if (-not (Test-Path -LiteralPath $path)) {
-        Write-Warning ("config.psd1 not found in {0}. Copy config.example.psd1 to config.psd1 and fill in your values. " +
-                       "Continuing with script parameters and built-in defaults only." -f $script:ToolkitRoot)
+        Write-Warning ("config.psd1 not found in {0}. Copy config.example.psd1 to config.psd1 and fill in your values. Continuing with script parameters and built-in defaults only." -f $script:ToolkitRoot)
         return @{}
     }
     try {
@@ -155,8 +154,8 @@ function Get-ColumnLetter([int]$Index) {
     $n = $Index + 1
     while ($n -gt 0) {
         $rem  = ($n - 1) % 26
-        $name = [char](65 + $rem) + $name
-        $n    = [math]::Floor(($n - 1) / 26)
+        $name = [string][char](65 + [int]$rem) + $name
+        $n    = [int][math]::Floor(($n - 1) / 26)
     }
     return $name
 }
@@ -315,10 +314,10 @@ $script:HtmlFont = 'font-family:Segoe UI,Arial,sans-serif;font-size:13px;'
 
 function Get-StatusStyle([string]$Status) {
     switch -Regex ($Status) {
-        '^(Critical|Expired|Error|Unreachable|Failed|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return 'background-color:#f8d7da;color:#842029;font-weight:600;' }
         '^(Warning|Expiring|Medium)'                   { return 'background-color:#fff3cd;color:#664d03;font-weight:600;' }
         '^Low'                                         { return 'background-color:#e7f1ff;color:#084298;font-weight:600;' }
-        '^OK'                                          { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
+        '^(OK|Done|Requested)'                         { return 'background-color:#d1e7dd;color:#0f5132;font-weight:600;' }
         default                                        { return '' }
     }
 }
@@ -447,4 +446,396 @@ function Send-ToolkitMail {
         Write-Warning "Email could not be sent: $($_.Exception.Message)"
         return $false
     }
+}
+
+# --- Microsoft Graph ------------------------------------------------------
+# Used by the M365 scripts. Needs the Microsoft.Graph.Authentication module.
+
+function Connect-ToolkitGraph {
+    <#
+        Connects to Microsoft Graph, or reuses an existing connection.
+        Sign-in settings come from the calling script's parameters (-Bound $PSBoundParameters) first,
+        then the M365 section of the config. Returns $true if this call made the connection,
+        so the caller knows to run Disconnect-MgGraph at the end.
+    #>
+    param(
+        [hashtable]$Config,
+        [string[]]$Scopes,
+        $Bound,
+        [string]$RoleHint = 'Global Reader'
+    )
+    $boundKeys = if ($Bound) { @($Bound.Keys) } else { @() }
+    $setting = { param($Name, $Default) if ($boundKeys -contains $Name) { $Bound[$Name] } else { Get-Setting $Config 'M365' $Name $Default } }
+    $tenantId   = & $setting 'TenantId' ''
+    $clientId   = & $setting 'ClientId' ''
+    $thumbprint = & $setting 'CertificateThumbprint' ''
+    $deviceCode = [bool](& $setting 'UseDeviceCode' $false)
+
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
+        throw 'The Microsoft Graph PowerShell module is not installed. Run: Install-Module Microsoft.Graph.Authentication -Scope CurrentUser'
+    }
+    Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
+
+    $context = Get-MgContext
+    if ($context -and (-not $tenantId -or $context.TenantId -eq $tenantId -or $tenantId -like '*.*')) {
+        Write-Host "Using existing Microsoft Graph connection ($($context.Account)$($context.AppName))."
+        if ($context.AuthType -eq 'Delegated') {
+            $missing = @($Scopes | Where-Object { $context.Scopes -notcontains $_ })
+            if ($missing.Count) { Write-Warning "Current connection is missing scope(s): $($missing -join ', '). Some sections may be empty. Run Disconnect-MgGraph and try again." }
+        }
+        return $false
+    }
+
+    $connect = @{ NoWelcome = $true; ErrorAction = 'Stop' }
+    if ($tenantId) { $connect.TenantId = $tenantId }
+    if ($clientId -and $thumbprint) {
+        if (-not $tenantId) { throw 'App-only sign-in needs a tenant. Set M365.TenantId in config.psd1 or use -TenantId.' }
+        $connect.ClientId = $clientId
+        $connect.CertificateThumbprint = $thumbprint
+        Write-Host 'Connecting to Microsoft Graph (app-only, certificate)...'
+    }
+    else {
+        $connect.Scopes = $Scopes
+        Write-Host "Connecting to Microsoft Graph - sign in with an account that has $RoleHint..."
+        if ($deviceCode) {
+            $connect.UseDeviceCode = $true
+            Write-Host 'Open the link below in any browser and enter the code shown.' -ForegroundColor Cyan
+        }
+        else {
+            Write-Host 'If the sign-in window goes blank or hangs, press Ctrl+C and run again with -UseDeviceCode.' -ForegroundColor Cyan
+        }
+    }
+    Connect-MgGraph @connect | Out-Null
+    return $true
+}
+
+function Get-GraphRunBy {
+    $c = Get-MgContext
+    if ($c.Account) { return $c.Account }
+    return "App: $($c.AppName)"
+}
+
+function Get-GraphTenantName {
+    try {
+        $org = @(Get-GraphAll 'v1.0/organization?$select=displayName,verifiedDomains') | Select-Object -First 1
+        $defaultDomain = @($org.verifiedDomains | Where-Object { $_.isDefault }) | Select-Object -First 1
+        return "$($org.displayName) ($($defaultDomain.name))"
+    }
+    catch { return "$((Get-MgContext).TenantId)" }
+}
+
+function Invoke-Graph([string]$Uri) {
+    # GET with a simple retry for throttling and transient errors
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            return Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType PSObject -ErrorAction Stop
+        }
+        catch {
+            if ($attempt -lt 5 -and $_.Exception.Message -match '429|TooManyRequests|503|ServiceUnavailable|504|GatewayTimeout') {
+                Start-Sleep -Seconds ([math]::Min(30, [math]::Pow(2, $attempt)))
+                continue
+            }
+            throw
+        }
+    }
+}
+
+function Get-GraphAll([string]$Uri) {
+    # Follows @odata.nextLink and returns every item
+    $next = $Uri
+    while ($next) {
+        $page = Invoke-Graph $next
+        foreach ($item in @($page.value)) { if ($null -ne $item) { $item } }
+        $next = $page.'@odata.nextLink'
+    }
+}
+
+function ConvertTo-LocalTime($Value) {
+    if ($null -eq $Value -or "$Value" -eq '') { return $null }
+    if ($Value -is [datetime]) {
+        if ($Value.Kind -eq [System.DateTimeKind]::Utc) { return $Value.ToLocalTime() }
+        return $Value
+    }
+    if ($Value -is [datetimeoffset]) { return $Value.LocalDateTime }
+    $dto = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse("$Value", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$dto)) {
+        return $dto.LocalDateTime
+    }
+    return $null
+}
+
+function Get-Latest([object[]]$Dates) {
+    $valid = @($Dates | Where-Object { $_ -is [datetime] })
+    if (-not $valid.Count) { return $null }
+    return ($valid | Sort-Object -Descending | Select-Object -First 1)
+}
+
+# --- Authentication method names ------------------------------------------
+
+$methodNames = @{
+    email                            = 'Email (SSPR only)'
+    mobilePhone                      = 'Mobile phone (SMS/voice)'
+    alternateMobilePhone             = 'Alternate mobile phone'
+    officePhone                      = 'Office phone'
+    microsoftAuthenticatorPush       = 'Microsoft Authenticator'
+    microsoftAuthenticatorPasswordless = 'Authenticator passwordless'
+    softwareOneTimePasscode          = 'Software OATH token'
+    hardwareOneTimePasscode          = 'Hardware OATH token'
+    windowsHelloForBusiness          = 'Windows Hello for Business'
+    fido2SecurityKey                 = 'FIDO2 security key'
+    passKeyDeviceBound               = 'Passkey'
+    passKeyDeviceBoundAuthenticator  = 'Passkey (Authenticator)'
+    passKeyDeviceBoundWindowsHello   = 'Passkey (Windows Hello)'
+    temporaryAccessPass              = 'Temporary Access Pass'
+    securityQuestion                 = 'Security questions'
+    macOsSecureEnclaveKey            = 'macOS Platform SSO'
+    x509Certificate                  = 'Certificate'
+}
+$phoneMethods     = @('mobilePhone', 'alternateMobilePhone', 'officePhone')
+$appMethods       = @('microsoftAuthenticatorPush', 'microsoftAuthenticatorPasswordless', 'softwareOneTimePasscode', 'hardwareOneTimePasscode')
+$phishResistant   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|x509|certificate)'
+$passwordlessRx   = '^(fido2|windowsHello|passKey|macOsSecureEnclave|microsoftAuthenticatorPasswordless)'
+
+function Test-StrongMethod([string]$Method) {
+    return ($phoneMethods -contains $Method) -or ($appMethods -contains $Method) -or ($Method -match $phishResistant) -or ($Method -match $passwordlessRx)
+}
+
+function ConvertFrom-MethodObject($Method) {
+    # /users/{id}/authentication/methods item -> registration-report style name
+    $type = "$($Method.'@odata.type')" -replace '^#microsoft\.graph\.', ''
+    switch ($type) {
+        'microsoftAuthenticatorAuthenticationMethod'   { 'microsoftAuthenticatorPush' }
+        'phoneAuthenticationMethod' {
+            switch ("$($Method.phoneType)") { 'alternateMobile' { 'alternateMobilePhone' } 'office' { 'officePhone' } default { 'mobilePhone' } }
+        }
+        'fido2AuthenticationMethod'                    { 'fido2SecurityKey' }
+        'windowsHelloForBusinessAuthenticationMethod'  { 'windowsHelloForBusiness' }
+        'softwareOathAuthenticationMethod'             { 'softwareOneTimePasscode' }
+        'hardwareOathAuthenticationMethod'             { 'hardwareOneTimePasscode' }
+        'emailAuthenticationMethod'                    { 'email' }
+        'temporaryAccessPassAuthenticationMethod'      { 'temporaryAccessPass' }
+        'platformCredentialAuthenticationMethod'       { 'macOsSecureEnclaveKey' }
+        'x509CertificateAuthenticationMethod'          { 'x509Certificate' }
+        'passwordAuthenticationMethod'                 { }
+        default                                        { if ($type) { $type } }
+    }
+}
+
+
+function Get-GraphUserMfa([string]$UserId) {
+    <#
+        MFA registration for one user. Uses the registration report (Entra ID P1/P2) when available,
+        otherwise reads the user's authentication methods.
+    #>
+    $methods = $null; $registered = $null; $source = ''
+    if ($script:MfaReportAvailable -ne $false) {
+        try {
+            $r = Invoke-Graph "v1.0/reports/authenticationMethods/userRegistrationDetails/$UserId"
+            $script:MfaReportAvailable = $true
+            $methods = @($r.methodsRegistered | Where-Object { $_ }); $registered = [bool]$r.isMfaRegistered; $source = 'Registration report'
+        }
+        catch {
+            if ($_.Exception.Message -notmatch '404|NotFound|ResourceNotFound') { $script:MfaReportAvailable = $false }
+        }
+    }
+    if ($null -eq $registered) {
+        try {
+            $methods = @(Get-GraphAll "v1.0/users/$UserId/authentication/methods" | ForEach-Object { ConvertFrom-MethodObject $_ } | Where-Object { $_ } | Sort-Object -Unique)
+            $registered = [bool](@($methods | Where-Object { Test-StrongMethod $_ }).Count)
+            $source = 'Methods API'
+        }
+        catch { $methods = @(); $source = "Unavailable: $($_.Exception.Message)" }
+    }
+    [pscustomobject]@{
+        Registered        = $registered
+        Methods           = (@($methods | ForEach-Object { if ($methodNames.ContainsKey($_)) { $methodNames[$_] } else { $_ } }) -join ', ')
+        PhishingResistant = [bool](@($methods | Where-Object { $_ -match $phishResistant }).Count)
+        Source            = $source
+    }
+}
+
+# --- Exchange Online -------------------------------------------------------
+# Used by the mailbox scripts. Needs the ExchangeOnlineManagement module.
+
+# Folders attackers move mail into so the victim doesn't see replies
+$hidingFolders   = 'RSS|Conversation History|Archive|Junk|Deleted Items|Notes|Sync Issues|Outbox'
+$sensitiveWords  = 'invoice|payment|bank|wire|transfer|remit|password|credential|security|phish|hack|compromis|suspicious|helpdesk|it support|mfa|verify'
+
+function Get-AddressInfo([string]$Entry, [string[]]$InternalDomains) {
+    # Rule targets look like: "Name" [SMTP:user@domain.com]  or  "Name" [EX:/o=ExchangeLabs/...]
+    $address = $Entry
+    if ($Entry -match 'SMTP:([^\]\s]+)') { $address = $Matches[1] }
+    elseif ($Entry -match '^smtp:(.+)$') { $address = $Matches[1] }
+    elseif ($Entry -match '\[EX:') { return [pscustomobject]@{ Address = ($Entry -replace '\s*\[EX:.*$', '').Trim('"', ' '); External = $false } }
+    $domain = if ($address -match '@(.+)$') { $Matches[1].ToLower() } else { '' }
+    $external = $domain -and -not ($InternalDomains | Where-Object { $domain -eq $_ -or $domain.EndsWith(".$_") })
+    return [pscustomobject]@{ Address = $address; External = [bool]$external }
+}
+
+function Get-InboxRuleAssessment {
+    <#
+        Rates an inbox rule (from Get-InboxRule). Risk is '' when there is nothing to report.
+        High: forwards externally, or hides mail (deletes/moves it and marks it read, or filters on sensitive words).
+        Critical: both. Medium: unusual name (only symbols). Low: forwards internally.
+    #>
+    param($Rule, [string[]]$InternalDomains)
+    $forwards = @()
+    foreach ($field in 'ForwardTo', 'ForwardAsAttachmentTo', 'RedirectTo') {
+        foreach ($entry in @($Rule.$field | Where-Object { $_ })) { $forwards += [pscustomobject]@{ Action = $field; Info = Get-AddressInfo "$entry" $InternalDomains } }
+    }
+    $external = @($forwards | Where-Object { $_.Info.External })
+    $words    = (@($Rule.SubjectContainsWords) + @($Rule.BodyContainsWords) + @($Rule.SubjectOrBodyContainsWords) | Where-Object { $_ }) -join ', '
+    $hidesMail = $Rule.DeleteMessage -or $Rule.SoftDeleteMessage -or ("$($Rule.MoveToFolder)" -match $hidingFolders)
+    $hides    = [bool]($hidesMail -and ($Rule.MarkAsRead -or $words -match $sensitiveWords))
+    $unusual  = ("$($Rule.Name)" -match '^[\W_]{1,4}$' -or "$($Rule.Name)".Trim().Length -le 1)
+    $issues = @(); $short = @(); $risk = ''
+
+    if ($external.Count) { $issues += 'Forwards to an external address'; $short += 'Forwards externally'; $risk = 'High' }
+    elseif ($forwards.Count) { $issues += 'Forwards internally'; $short += 'Forwards internally'; $risk = 'Low' }
+    if ($hides) {
+        $issues += 'Hides messages (deletes or moves them and marks them read, or filters on sensitive words) - common after an account takeover'
+        $short  += 'Hides messages'
+        $risk = if ($risk -eq 'High') { 'Critical' } else { 'High' }
+    }
+    if ($unusual) {
+        $issues += 'Unusual rule name (only symbols or one character)'
+        $short  += 'Unusual rule name'
+        if (-not $risk -or $risk -eq 'Low') { $risk = 'Medium' }
+    }
+
+    $actions = @()
+    if ($forwards.Count)      { $actions += (@($forwards.Action | Sort-Object -Unique) -join '/') }
+    if ($Rule.DeleteMessage)  { $actions += 'Delete' }
+    if ($Rule.MoveToFolder)   { $actions += "Move to $($Rule.MoveToFolder)" }
+    if ($Rule.MarkAsRead)     { $actions += 'Mark as read' }
+
+    [pscustomobject]@{
+        Risk               = $risk
+        Issues             = $issues
+        Short              = $short
+        ForwardsExternally = [bool]$external.Count
+        Hides              = $hides
+        Targets            = (@($forwards | ForEach-Object { "$($_.Info.Address)$(if ($_.Info.External) { ' (external)' })" }) -join ', ')
+        Actions            = ($actions -join '; ')
+        Conditions         = if ($words) { "Words: $words" } elseif ($Rule.From) { "From: $(@($Rule.From) -join ', ')" } else { '' }
+    }
+}
+
+function Connect-ToolkitExchange {
+    <#
+        Connects to Exchange Online, or reuses an existing connection. Sign-in settings come from the
+        calling script's parameters (-Bound $PSBoundParameters) first, then the M365 section of the config.
+        Returns $true if this call made the connection.
+    #>
+    param([hashtable]$Config, $Bound, [string]$RoleHint = 'Exchange Administrator (or Global Reader)')
+    $boundKeys = if ($Bound) { @($Bound.Keys) } else { @() }
+    $setting = { param($Name, $Default) if ($boundKeys -contains $Name) { $Bound[$Name] } else { Get-Setting $Config 'M365' $Name $Default } }
+    $TenantId              = & $setting 'TenantId' ''
+    $ClientId              = & $setting 'ClientId' ''
+    $CertificateThumbprint = & $setting 'CertificateThumbprint' ''
+    $UseDeviceCode         = [bool](& $setting 'UseDeviceCode' $false)
+
+    if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
+        throw 'The Exchange Online PowerShell module is not installed. Run: Install-Module ExchangeOnlineManagement -Scope CurrentUser'
+    }
+    Import-Module ExchangeOnlineManagement -ErrorAction Stop
+    $existing = @(Get-ConnectionInformation -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Connected' })
+    if ($existing.Count) {
+        Write-Host "Using existing Exchange Online connection ($($existing[0].UserPrincipalName)$($existing[0].AppId))."
+        return $false
+    }
+    $connect = @{ ShowBanner = $false; ErrorAction = 'Stop' }
+    if ($ClientId -and $CertificateThumbprint) {
+        if ($TenantId -notlike '*.*') { throw 'App-only sign-in to Exchange needs the tenant domain (e.g. contoso.onmicrosoft.com). Set M365.TenantId in config.psd1 or use -TenantId.' }
+        $connect.AppId = $ClientId; $connect.CertificateThumbprint = $CertificateThumbprint; $connect.Organization = $TenantId
+        Write-Host 'Connecting to Exchange Online (app-only, certificate)...'
+    }
+    else {
+        Write-Host "Connecting to Exchange Online - sign in with an account that has $RoleHint..."
+        if ($UseDeviceCode) {
+            $connect.Device = $true
+            Write-Host 'Open the link below in any browser and enter the code shown.' -ForegroundColor Cyan
+        }
+        else {
+            Write-Host 'If the sign-in window goes blank or hangs, press Ctrl+C and run again with -UseDeviceCode.' -ForegroundColor Cyan
+        }
+    }
+    Connect-ExchangeOnline @connect | Out-Null
+    return $true
+}
+
+# --- Evidence packages (SOC scripts) ----------------------------------------
+
+function New-EvidenceFolder {
+    <# Creates <EvidenceFolder>\<Name>. Default location: SOC.EvidenceFolder, otherwise <OutputFolder>\Evidence. #>
+    param([hashtable]$Config, [string]$OutputPath, [string]$Name)
+    $root = $OutputPath
+    if (-not $root) {
+        $configured = Get-Setting $Config 'SOC' 'EvidenceFolder' ''
+        $root = if ($configured) { Resolve-ToolkitPath $configured } else { Join-Path (Resolve-ToolkitPath (Get-Setting $Config 'General' 'OutputFolder' 'Reports')) 'Evidence' }
+    }
+    $path = Join-Path $root ($Name -replace '[^\w\.-]', '_')
+    New-Item -ItemType Directory -Path $path -Force -WhatIf:$false -Confirm:$false | Out-Null
+    return (Resolve-Path -LiteralPath $path).Path
+}
+
+function ConvertTo-UtcText($Value) {
+    <# Dates as ISO 8601 UTC text, so evidence from different time zones lines up. #>
+    if ($null -eq $Value -or "$Value" -eq '') { return '' }
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss') + 'Z' }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + 'Z' }
+    $dto = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse("$Value", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$dto)) {
+        return $dto.UtcDateTime.ToString('yyyy-MM-dd HH:mm:ss') + 'Z'
+    }
+    return "$Value"
+}
+
+function Export-EvidenceCsv {
+    <# Writes rows to <Folder>\<Name>.csv. Lists are joined with '; ' and dates converted to UTC. Returns the row count. #>
+    param([string]$Folder, [string]$Name, $Rows)
+    $file = Join-Path $Folder "$Name.csv"
+    $list = @($Rows | Where-Object { $null -ne $_ })
+    if (-not $list.Count) {
+        [System.IO.File]::WriteAllText($file, '', $script:Utf8NoBom)
+        return 0
+    }
+    $flat = foreach ($r in $list) {
+        $o = [ordered]@{}
+        foreach ($p in $r.PSObject.Properties) {
+            if ($p.Name -like 'PS*' -and $p.Name -in 'PSComputerName', 'PSShowComputerName', 'PSSourceJobInstanceId', 'RunspaceId') { continue }
+            $v = $p.Value
+            if ($v -is [datetime] -or $v -is [datetimeoffset]) { $v = ConvertTo-UtcText $v }
+            elseif ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { $v = (@($v) | ForEach-Object { "$_" }) -join '; ' }
+            $o[$p.Name] = $v
+        }
+        [pscustomobject]$o
+    }
+    $flat | Export-Csv -LiteralPath $file -NoTypeInformation -Encoding UTF8 -WhatIf:$false -Confirm:$false
+    return $list.Count
+}
+
+function Complete-EvidencePackage {
+    <#
+        Writes manifest.csv (SHA-256 of every file), zips the folder to <Folder>.zip and writes
+        <Folder>.zip.sha256. Record the zip hash in your case notes so the evidence can be shown to be unchanged.
+    #>
+    param([string]$Folder)
+    $files = @(Get-ChildItem -LiteralPath $Folder -File -Recurse | Where-Object { $_.Name -ne 'manifest.csv' })
+    $manifest = foreach ($f in $files) {
+        [pscustomobject]@{
+            File   = $f.FullName.Substring($Folder.Length).TrimStart('\', '/')
+            Bytes  = $f.Length
+            SHA256 = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+        }
+    }
+    @($manifest) | Export-Csv -LiteralPath (Join-Path $Folder 'manifest.csv') -NoTypeInformation -Encoding UTF8 -WhatIf:$false -Confirm:$false
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = "$Folder.zip"
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force -WhatIf:$false -Confirm:$false }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($Folder, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
+    $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+    [System.IO.File]::WriteAllText("$zip.sha256", "$hash  $(Split-Path -Leaf $zip)`r`n", $script:Utf8NoBom)
+    return [pscustomobject]@{ Folder = $Folder; Zip = $zip; Sha256 = $hash; Files = $files.Count + 1 }
 }
