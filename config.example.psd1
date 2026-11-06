@@ -147,9 +147,56 @@
         ClientId              = ''
         CertificateThumbprint = ''
 
+        # Sign in with a code at microsoft.com/devicelogin instead of the Windows sign-in window.
+        # Use this if the sign-in window goes blank (a known issue with Microsoft Graph module 2.34+).
+        UseDeviceCode = $false
+
         IncludeGuests       = $false
         StaleDays           = 90     # enabled users with no sign-in for longer than this are flagged
         NewAccountGraceDays = 14     # accounts newer than this are noted as "new" when MFA is missing
+    }
+
+    # The four sections below are for the other Microsoft 365 scripts. They use the M365 section above to sign in.
+    AppCredentials = @{
+        WarningDays                = 30
+        CriticalDays               = 7
+        IgnoreExpiredOlderThanDays = 90     # older expired secrets/certificates are left out
+        MaxSecretLifetimeDays      = 730    # client secrets valid for longer than this are flagged
+    }
+
+    AdminRoles = @{
+        StaleDays       = 90   # admins with no sign-in for longer than this are flagged
+        MaxGlobalAdmins = 4    # more enabled Global Administrators than this is flagged (Microsoft recommends fewer than 5)
+    }
+
+    AppPermissions = @{
+        RecentDays = 30        # high-risk apps added within this many days are flagged as possible consent phishing
+    }
+
+    Devices = @{
+        StaleSyncDays = 30     # Get-NonCompliantDeviceReport: flag devices with no Intune check-in for longer than this
+    }
+
+    SharePoint = @{
+        AdminUrl     = 'https://contoso-admin.sharepoint.com'   # your SharePoint admin centre URL
+        InactiveDays = 365                                       # sites with no activity for longer than this are flagged
+    }
+
+    BitLocker = @{
+        SearchBase = ''        # optional OU to check, e.g. 'OU=Laptops,DC=corp,DC=example,DC=com'. Empty = whole domain
+        StaleDays  = 90        # flag computers whose newest recovery key is older than this
+    }
+
+    SOC = @{
+        # Where evidence packages are saved. Use a folder only the IR team can read - evidence
+        # contains user names, IPs and command lines. Empty = <OutputFolder>\Evidence.
+        EvidenceFolder = ''
+
+        TriageHours     = 72     # Invoke-WindowsTriage: event log history to collect
+        TriageFileDays  = 14     # Invoke-WindowsTriage: recently created/changed files to list
+        TriageMaxEvents = 5000   # Invoke-WindowsTriage: maximum events per event log query
+
+        SignInDays = 7           # Invoke-AccountContainment: days of sign-ins and audit events to save (max 30)
     }
 
     RiskyAccounts = @{
