@@ -12,10 +12,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Requires: admin rights and WinRM (or DCOM) on the servers
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
@@ -246,7 +242,6 @@ function New-HealthReportHtml([object[]]$Results) {
                 ForEach-Object { [pscustomobject]@{ Server = $_.Server; 'Errors (24h)' = $_.Errors24h; 'Top sources' = $_.TopErrorSources } }
 
     $intro = @(
-        "$($Results.Count) server(s) checked: $critical critical, $warning warning, $ok OK.",
         ("Thresholds: disk warning below {0}% free, critical below {1}%; uptime over {2} days; no update for over {3} days." -f
             $thresholds.DiskWarning, $thresholds.DiskCritical, $thresholds.UptimeDays, $thresholds.PatchDays)
     )
@@ -259,7 +254,12 @@ function New-HealthReportHtml([object[]]$Results) {
     )
     $title = "Daily health check - $(Get-Date -Format 'dddd d MMMM yyyy')"
     return @{
-        Html     = New-HtmlReport -Title $title -IntroLines $intro -Sections $sections
+        Html     = New-HtmlReport -Title $title -IntroLines $intro -Sections $sections -Stats @(
+                       @{ Label = 'Servers checked'; Value = $Results.Count }
+                       @{ Label = 'Critical'; Value = $critical; Status = 'Critical' }
+                       @{ Label = 'Warning'; Value = $warning; Status = 'Warning' }
+                       @{ Label = 'OK'; Value = $ok; Status = 'OK' }
+                   )
         Critical = $critical
         Warning  = $warning
         OK       = $ok
