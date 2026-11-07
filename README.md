@@ -97,7 +97,8 @@ Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
   - `Get-OpenPortReport.ps1 -AllowedPort 135,445,3389` flags any other open port.
   - `Get-PasswordExpiryReport.ps1 -HelpdeskContact 'the IT Service Desk on 0123 456789'` sets the contact shown in user reminders.
   - `Get-InactiveAccountsReport.ps1` has no default exclusions. Use `-Exclude 'svc_*','admin_*'` to skip service and admin accounts.
-- Scripts with HTML reports or emails take `-Organisation 'Contoso Ltd'` and `-Classification Confidential` for the labels at the top and bottom. Without them the label says *Internal* and no organisation is shown; `-Classification ''` hides the label.
+- Scripts that write reports take `-ThemeFile .\my-theme.psd1` to change fonts and colours (see [Changing the look](#changing-the-look)).
+- Scripts with HTML reports or emails also take `-Organisation 'Contoso Ltd'` and `-Classification Confidential` for the labels at the top and bottom. These override the theme. Without either, the label says *Internal* and no organisation is shown; `-Classification ''` hides the label.
 - To email a report, add the mail settings:
   ```powershell
   .\Get-MfaStatusReport.ps1 -SendEmail -SmtpServer smtp.yourdomain -MailFrom reports@yourdomain -MailTo it@yourdomain
@@ -132,7 +133,7 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    ```
    - Replace every placeholder (`example.com`, `SERVER01`, `<...>`) with your real values.
    - The scripts warn you if a setting they use still contains a placeholder.
-   - `General.Organisation` and `General.Classification` set the organisation name and label (for example *Internal* or *Confidential*) shown at the top and bottom of HTML reports and emails.
+   - The `Theme` section sets the look of reports and emails, including the organisation name and classification label (for example *Internal* or *Confidential*). See [Changing the look](#changing-the-look).
 
 4. **Optional: SMTP authentication.** If your mail relay needs a login, create an encrypted credential file. Run this as the account that will run the scripts:
    ```powershell
@@ -142,6 +143,31 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    - The file can only be decrypted by that user on that machine.
 
 Reports are saved to `Reports\` in the toolkit folder by default. Change this with `General.OutputFolder`.
+
+## Changing the look
+
+The HTML reports, emails and Excel workbooks all take their fonts and colours from a **theme**. Without one they use the built-in look shown above. To match your organisation's style:
+
+1. **Start from a theme file** in `themes/`:
+   - `default.psd1` - the built-in look, with every setting explained
+   - `classic.psd1` - plain blue tables
+
+   Or **make one from your own Word or Excel template**. It reads the template's fonts and colours (header bars, accent lines, label cells, text) and writes a theme you can fine-tune:
+   ```powershell
+   .\themes\New-ReportTheme.ps1 -Template '.\Company Template.docx' -Organisation 'Contoso Ltd' -OutFile .\themes\contoso.local.psd1
+   ```
+
+2. **Use it.**
+   - Toolkit: set `File` in the `Theme` section of `config.psd1`. Any setting can also go straight into that section, e.g. `Primary = '#1f3a5f'`.
+     ```powershell
+     Theme = @{ File = 'themes\contoso.local.psd1' }
+     ```
+   - Standalone: add `-ThemeFile`.
+     ```powershell
+     .\Get-MfaStatusReport.ps1 -ThemeFile .\contoso.local.psd1
+     ```
+
+Themes set the organisation name, classification label, an optional logo (`LogoUrl`, HTML only), fonts, header and accent colours, row stripes and status colours. Files ending in `.local.psd1` are ignored by git, so themes made from work templates stay out of the repo.
 
 ## Usage
 
@@ -461,7 +487,8 @@ Register-ScheduledTask -TaskName 'Daily health check' -Action $action -Trigger $
 ├── M365/
 ├── Security/              AD risk checks, device compliance and incident response
 ├── Intune/                Intune detection and remediation pairs
-└── docs/                  the README banner
+├── themes/                report themes and New-ReportTheme.ps1
+└── docs/                  the README banner and example screenshots
 ```
 
 ## Licence
