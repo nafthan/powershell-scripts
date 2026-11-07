@@ -115,17 +115,32 @@ function Add-ZipText($Zip, [string]$Name, [string]$Text) {
     try { $writer.Write($Text) } finally { $writer.Dispose() }
 }
 
+function Get-XlsxStatusStyle([string]$Value) {
+    <# Cell style for a status value, matching the HTML badges: 2 red, 3 amber, 4 blue, 5 green, 0 plain. #>
+    switch -Regex ($Value) {
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return 2 }
+        '^(Warning|Expiring|Medium)'                                  { return 3 }
+        '^Low'                                                        { return 4 }
+        '^(OK|Done|Requested)'                                        { return 5 }
+        default                                                       { return 0 }
+    }
+}
+
 function Add-XlsxSheet {
     param($Zip, [int]$Index, [string[]]$Headers, $Rows, [int[]]$Widths)
 
     $inv     = [System.Globalization.CultureInfo]::InvariantCulture
     $letters = for ($i = 0; $i -lt $Headers.Count; $i++) { Get-ColumnLetter $i }
+    # Columns whose values get status colours, and the label column of an Item/Value summary sheet
+    $statusCols = @(for ($i = 0; $i -lt $Headers.Count; $i++) { if ($Headers[$i] -match '^(Status|Risk|Severity|Rating|Result|Overall)$') { $i } })
+    $labelCol   = if ($Headers.Count -eq 2 -and $Headers[0] -eq 'Item' -and $Headers[1] -eq 'Value') { 0 } else { -1 }
     $entry   = $Zip.CreateEntry("xl/worksheets/sheet$Index.xml")
     $w       = New-Object System.IO.StreamWriter($entry.Open(), $script:Utf8NoBom)
     try {
         $w.Write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         $w.Write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">')
-        $w.Write('<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>')
+        $w.Write('<sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>')
+        $w.Write('<sheetFormatPr defaultRowHeight="18"/>')
         $w.Write('<cols>')
         for ($i = 0; $i -lt $Headers.Count; $i++) {
             $width = if ($Widths -and $i -lt $Widths.Count) { $Widths[$i] } else { 20 }
@@ -133,7 +148,7 @@ function Add-XlsxSheet {
         }
         $w.Write('</cols><sheetData>')
 
-        $w.Write('<row r="1">')
+        $w.Write('<row r="1" ht="24" customHeight="1">')
         for ($i = 0; $i -lt $Headers.Count; $i++) {
             $w.Write(('<c r="{0}1" s="1" t="inlineStr"><is><t>{1}</t></is></c>' -f $letters[$i], (ConvertTo-XmlText $Headers[$i])))
         }
@@ -146,20 +161,21 @@ function Add-XlsxSheet {
             for ($i = 0; $i -lt $Headers.Count; $i++) {
                 $ref = "$($letters[$i])$r"
                 $val = $row.($Headers[$i])
+                $st  = if ($i -eq $labelCol) { 6 } elseif ($statusCols -contains $i -and $null -ne $val) { Get-XlsxStatusStyle "$val" } else { 0 }
                 if ($null -eq $val) {
-                    continue
+                    $w.Write("<c r=`"$ref`" s=`"0`"/>")   # empty but styled, so the row line is unbroken
                 }
                 elseif ($val -is [int] -or $val -is [long] -or $val -is [double] -or $val -is [decimal] -or $val -is [single]) {
-                    $w.Write("<c r=`"$ref`"><v>$(([double]$val).ToString('R', $inv))</v></c>")
+                    $w.Write("<c r=`"$ref`" s=`"$st`"><v>$(([double]$val).ToString('R', $inv))</v></c>")
                 }
                 elseif ($val -is [datetime]) {
-                    $w.Write("<c r=`"$ref`" t=`"inlineStr`"><is><t>$($val.ToString('yyyy-MM-dd HH:mm', $inv))</t></is></c>")
+                    $w.Write("<c r=`"$ref`" s=`"$st`" t=`"inlineStr`"><is><t>$($val.ToString('yyyy-MM-dd HH:mm', $inv))</t></is></c>")
                 }
                 elseif ($val -is [bool]) {
-                    $w.Write("<c r=`"$ref`" t=`"inlineStr`"><is><t>$(if ($val) { 'Yes' } else { 'No' })</t></is></c>")
+                    $w.Write("<c r=`"$ref`" s=`"$st`" t=`"inlineStr`"><is><t>$(if ($val) { 'Yes' } else { 'No' })</t></is></c>")
                 }
                 else {
-                    $w.Write("<c r=`"$ref`" t=`"inlineStr`"><is><t xml:space=`"preserve`">$(ConvertTo-XmlText "$val")</t></is></c>")
+                    $w.Write("<c r=`"$ref`" s=`"$st`" t=`"inlineStr`"><is><t xml:space=`"preserve`">$(ConvertTo-XmlText "$val")</t></is></c>")
                 }
             }
             $w.Write('</row>')
@@ -218,16 +234,25 @@ function Export-Xlsx {
             "<Relationship Id=`"rId$stylesId`" Type=`"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles`" Target=`"styles.xml`"/>" +
             '</Relationships>')
 
+        # Styles match the HTML reports: warm ink and greys, thin row lines, status colours like the badges.
+        #   0 body  1 header  2 red  3 amber  4 blue  5 green  6 summary label
+        $font = { param($Size, $Colour, $Name, [switch]$Bold) "<font>$(if ($Bold) { '<b/>' })<sz val=`"$Size`"/><color rgb=`"FF$Colour`"/><name val=`"$Name`"/></font>" }
+        $fill = { param($Colour) "<fill><patternFill patternType=`"solid`"><fgColor rgb=`"FF$Colour`"/><bgColor indexed=`"64`"/></patternFill></fill>" }
+        $xf   = { param($Font, $Fill, $Border) "<xf numFmtId=`"0`" fontId=`"$Font`" fillId=`"$Fill`" borderId=`"$Border`" xfId=`"0`" applyFont=`"1`" applyFill=`"1`" applyBorder=`"1`" applyAlignment=`"1`"><alignment horizontal=`"left`" vertical=`"center`" indent=`"1`"/></xf>" }
         Add-ZipText $zip 'xl/styles.xml' ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
             '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-            '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font>' +
-            '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font></fonts>' +
-            '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-            '<fill><patternFill patternType="solid"><fgColor rgb="FF305496"/><bgColor indexed="64"/></patternFill></fill></fills>' +
-            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+            '<fonts count="7">' +
+                (& $font 10 '1C1B19' 'Segoe UI') + (& $font 9 'E8E4DC' 'Consolas' -Bold) +
+                (& $font 10 '9B2C2C' 'Segoe UI' -Bold) + (& $font 10 '875A0B' 'Segoe UI' -Bold) +
+                (& $font 10 '2D5A86' 'Segoe UI' -Bold) + (& $font 10 '2F6A47' 'Segoe UI' -Bold) +
+                (& $font 9 '78736A' 'Consolas') + '</fonts>' +
+            '<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+                (& $fill '1C1B19') + (& $fill 'F9EBE9') + (& $fill 'FBF3E1') + (& $fill 'EAF1F8') + (& $fill 'E9F3EC') + '</fills>' +
+            '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>' +
+                '<border><left/><right/><top/><bottom style="thin"><color rgb="FFE6E2DA"/></bottom><diagonal/></border></borders>' +
             '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-            '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
-            '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
+            '<cellXfs count="7">' +
+                (& $xf 0 0 1) + (& $xf 1 2 0) + (& $xf 2 3 1) + (& $xf 3 4 1) + (& $xf 4 5 1) + (& $xf 5 6 1) + (& $xf 6 0 1) + '</cellXfs>' +
             '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
             '</styleSheet>')
 
