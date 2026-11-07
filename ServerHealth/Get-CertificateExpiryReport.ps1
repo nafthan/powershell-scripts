@@ -9,10 +9,6 @@
     Author : nafthan
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
