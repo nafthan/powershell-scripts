@@ -17,6 +17,10 @@
     General = @{
         # Where reports are saved. Relative paths are relative to the toolkit folder.
         OutputFolder = 'Reports'
+
+        # Shown on HTML reports and emails. Leave Organisation empty to hide it.
+        Organisation   = ''             # e.g. 'Contoso Ltd'
+        Classification = 'Internal'     # e.g. 'Internal', 'Confidential'. Empty to hide
     }
 
     Email = @{
