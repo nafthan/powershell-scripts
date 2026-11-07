@@ -1,9 +1,7 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.gif">
-  <img alt="PowerShell Scripts" src="docs/banner-light.gif" width="100%">
-</picture>
+   <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
+   <img alt="PowerShell Scripts" src="docs/banner-light.svg" width="100%">
 
 [nafthan.co.uk](https://nafthan.co.uk)
 
