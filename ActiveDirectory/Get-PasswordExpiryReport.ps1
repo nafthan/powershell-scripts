@@ -105,23 +105,27 @@ function New-UserNotificationHtml($User) {
         1            { 'tomorrow'; break }
         default      { "in $($User.DaysLeft) days" }
     }
-    $st   = $script:ReportStyle
-    $p    = "$($st.Sans)font-size:14px;line-height:1.6;color:$($st.Ink);margin:0 0 14px 0;"
+    $t     = Get-ReportTheme
+    $label = $t.Css.Label; $sans = $t.Css.Sans
+    $p     = "$($sans)font-size:14px;line-height:1.6;color:$($t.Text);margin:0 0 14px 0;"
+    $org   = (Get-ReportLabels).Organisation
+    $eyebrow = if ($org) { "$(& $enc $org) &nbsp;/&nbsp; Password reminder" } else { 'Password reminder' }
+    $stripe  = if ($t.Accent) { "border-bottom:4px solid $($t.Accent);" } else { '' }
     return @"
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background-color:$($st.Page);">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:$($st.Page);"><tr><td align="center" style="padding:28px 16px;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background-color:$($st.Card);border:1px solid $($st.Line);border-top:3px solid $($st.Ink);border-radius:4px;">
-<tr><td style="padding:26px 30px 8px 30px;">
-<div style="$($st.Mono)font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:$($st.Muted);margin:0 0 10px 0;">Password reminder</div>
-<div style="$($st.Sans)font-size:20px;font-weight:600;line-height:1.3;color:$($st.Ink);margin:0 0 18px 0;">Your password expires $when</div>
+<body style="margin:0;padding:0;background-color:$($t.Page);">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:$($t.Page);"><tr><td align="center" style="padding:28px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background-color:$($t.Card);border:1px solid $($t.Line);">
+<tr><td style="background-color:$($t.Primary);padding:10px 30px;$stripe$($label)font-size:10.5px;color:$($t.OnPrimary);">$eyebrow</td></tr>
+<tr><td style="padding:24px 30px 8px 30px;">
+<div style="$($sans)font-size:20px;font-weight:600;line-height:1.3;color:$($t.Heading);margin:0 0 18px 0;">Your password expires $when</div>
 <p style="$p">Hello $(& $enc $name),</p>
 <p style="$p">The password for your account <b>$(& $enc $User.SamAccountName)</b> expires on <b>$($User.ExpiresOn.ToString('dddd d MMMM yyyy, HH:mm'))</b>.</p>
 <p style="$p"><b>To change it:</b> $(& $enc $instructions)</p>
 <p style="$p">If you are working remotely, connect to the VPN before changing your password so your laptop picks up the new one.</p>
 <p style="$p">If you need help, please contact $(& $enc $helpdesk).</p>
 </td></tr>
-<tr><td style="padding:0 30px 22px 30px;"><div style="border-top:1px solid $($st.Line);padding-top:12px;$($st.Mono)font-size:10.5px;letter-spacing:0.06em;color:$($st.Muted);">This is an automated message. Please do not reply.</div></td></tr>
+<tr><td style="padding:0 30px 22px 30px;"><div style="border-top:1px solid $($t.Line);padding-top:12px;$($sans)font-size:11px;color:$($t.Muted);">This is an automated message. Please do not reply.</div></td></tr>
 </table></td></tr></table>
 </body></html>
 "@
