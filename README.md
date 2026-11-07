@@ -13,7 +13,7 @@
 
 PowerShell scripts for day to day admin and security work across Windows servers, file shares, Active Directory, Microsoft 365 and Intune.
 
-They answer the questions that come up every week: who has access to what, which accounts haven't been used in months, which passwords, certificates and app secrets are about to expire, which devices aren't compliant, and whether the servers are healthy. Each report is saved as an Excel workbook (`.xlsx`) or HTML page and can be emailed. Excel doesn't need to be installed.
+They answer the questions that come up every week: who has access to what, which accounts haven't been used in months, which passwords, certificates and app secrets are about to expire, which devices aren't compliant, and whether the servers are healthy. Each report is saved as an Excel workbook (`.xlsx`) or HTML page and can be emailed.
 
 There are no server names, domains or email addresses in the scripts. Anything specific to your environment goes in one config file that git ignores.
 
