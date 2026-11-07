@@ -13,8 +13,6 @@
 
 Day to day reporting scripts for Windows servers, file shares, Active Directory and Microsoft 365.
 
-These started as one script. I needed to find every path on a file share that was over the Windows 260-character limit, and it grew from there into the reports I actually reach for during the week: who has access to what, which accounts haven't logged on in months, whose password is about to expire, and whether the servers are healthy.
-
 Two decisions shaped all of it. First, nothing needs installing: the scripts write real `.xlsx` workbooks themselves, so the machine running them doesn't need Excel or any extra modules. Second, it's meant to live in a public repo, so there are no server names, domains or email addresses in the scripts at all. Everything specific to an environment lives in one config file that git never sees.
 
 Every report is saved as an Excel workbook (`.xlsx`) or HTML page, and can be emailed. Excel and extra PowerShell modules are not needed on the machine running the scripts.
@@ -51,7 +49,7 @@ Every report is saved as an Excel workbook (`.xlsx`) or HTML page, and can be em
 | Intune | `Intune/Detect-` / `Remediate-OemBloatware.ps1` | Remediation pair: removes Dell, HP and Lenovo bloatware |
 | Intune | `Intune/Detect-` / `Remediate-LowDiskSpace.ps1` | Remediation pair: clears temp files, Recycle Bin and caches when the system drive is low |
 
-Also in this repo: [`docs/PowerShell-One-Liners.md`](docs/PowerShell-One-Liners.md), a cheat sheet of quick commands for Exchange Online, Entra ID, AD and Windows.
+Can find a cheatsheet for general PowerShell usage on my site at [Cheatsheets](https://nafthan.co.uk/cheatsheets)
 
 ## Two ways to use these scripts
 
@@ -112,7 +110,6 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    notepad .\config.psd1
    ```
    - Replace every placeholder (`example.com`, `SERVER01`, `<...>`) with your real values.
-   - `config.psd1` is in `.gitignore`, so it is never committed.
    - The scripts warn you if a setting they use still contains a placeholder.
 
 4. **Optional: SMTP authentication.** If your mail relay needs a login, create an encrypted credential file. Run this as the account that will run the scripts:
@@ -121,7 +118,6 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    ```
    Then set `CredentialFile = 'smtp.cred.xml'` in the Email section.
    - The file can only be decrypted by that user on that machine.
-   - `*.cred.xml` is in `.gitignore`.
 
 Reports are saved to `Reports\` in the toolkit folder by default. Change this with `General.OutputFolder`.
 
@@ -428,13 +424,6 @@ Register-ScheduledTask -TaskName 'Daily health check' -Action $action -Trigger $
 
 - When run with `-File`, list parameters can be passed as one comma-separated value, e.g. `-ComputerName "SERVER01,SERVER02"`.
 - If you use `Email.CredentialFile`, create it while logged on as the task account, because only that account can decrypt it.
-
-## Publishing safely
-
-- Commit `config.example.psd1` and never `config.psd1`.
-- Before pushing, run `git status` and check that no `config.psd1`, `*.cred.xml` or report files are staged.
-- If you add a setting, put a placeholder for it in `config.example.psd1`. Use the reserved `example.com` domain, or `<ANGLE BRACKETS>` for free text.
-- For extra safety, run a secret scanner such as [gitleaks](https://github.com/gitleaks/gitleaks) before pushing.
 
 ## Layout
 
