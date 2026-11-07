@@ -110,7 +110,6 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    notepad .\config.psd1
    ```
    - Replace every placeholder (`example.com`, `SERVER01`, `<...>`) with your real values.
-   - `config.psd1` is in `.gitignore`, so it is never committed.
    - The scripts warn you if a setting they use still contains a placeholder.
 
 4. **Optional: SMTP authentication.** If your mail relay needs a login, create an encrypted credential file. Run this as the account that will run the scripts:
@@ -119,7 +118,6 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    ```
    Then set `CredentialFile = 'smtp.cred.xml'` in the Email section.
    - The file can only be decrypted by that user on that machine.
-   - `*.cred.xml` is in `.gitignore`.
 
 Reports are saved to `Reports\` in the toolkit folder by default. Change this with `General.OutputFolder`.
 
