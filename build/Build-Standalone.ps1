@@ -59,6 +59,13 @@ $emailParams = @(
     '[string[]]$MailTo'
 )
 
+$reportParams = @(
+    '# Report labels (HTML reports and emails)'
+    '[string]$Organisation'
+    "[string]`$Classification = 'Internal'"
+)
+$reportConfig = '$cfg.General.Organisation = $Organisation; $cfg.General.Classification = $Classification'
+
 $configFunction = @'
 function Get-ToolkitConfig {
     # Standalone: no config file. Settings come from parameters and built-in defaults.
@@ -142,6 +149,8 @@ foreach ($folder in $sourceFolders) {
             $ast    = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
             $add    = @()
             if ($text -match 'Send-ToolkitMail') { $add += $emailParams }
+            $hasHtml = $text -match 'New-HtmlReport'
+            if ($hasHtml) { $add += $reportParams }
             if ($extra -and $extra.Params) { $add += $extra.Params }
             if ($add.Count) {
                 $insertAt = $ast.ParamBlock.Parameters[-1].Extent.EndOffset
@@ -151,7 +160,8 @@ foreach ($folder in $sourceFolders) {
             }
 
             # 2. Shared helpers in place of the dot-source line
-            $cfgFn = $configFunction.Replace('#EXTRA#', $(if ($extra -and $extra.Config) { $extra.Config } else { '' }))
+            $extraCfg = @($(if ($extra -and $extra.Config) { $extra.Config }), $(if ($hasHtml) { $reportConfig })) | Where-Object { $_ }
+            $cfgFn = $configFunction.Replace('#EXTRA#', ($extraCfg -join "`n    "))
             $names = Get-NeededFunctions ($text + "`n" + $cfgFn) | Where-Object { $_ -ne 'Get-ToolkitConfig' }
             $helpers = @('#region Shared helpers (copied in by build/Build-Standalone.ps1 - edit Shared/Common.ps1 in the repo instead)')
             $used = $text + "`n" + $cfgFn + "`n" + (($names | ForEach-Object { $functions[$_] }) -join "`n")
