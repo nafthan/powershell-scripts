@@ -13,7 +13,7 @@
 
 PowerShell scripts for day to day admin and security work across Windows servers, file shares, Active Directory, Microsoft 365 and Intune.
 
-They answer the questions that come up every week: who has access to what, which accounts haven't been used in months, which passwords, certificates and app secrets are about to expire, which devices aren't compliant, and whether the servers are healthy. Each report is saved as an Excel workbook (`.xlsx`) or HTML page and can be emailed. Excel doesn't need to be installed.
+They answer the questions that come up every week: who has access to what, which accounts haven't been used in months, which passwords, certificates and app secrets are about to expire, which devices aren't compliant, and whether the servers are healthy. Each report is saved as an Excel workbook (`.xlsx`) or HTML page and can be emailed.
 
 There are no server names, domains or email addresses in the scripts. Anything specific to your environment goes in one config file that git ignores.
 
@@ -85,6 +85,12 @@ Unblock-File .\Get-FolderSizeReport.ps1
 Get-Help .\Get-FolderSizeReport.ps1 -Full      # every option
 ```
 
+If nothing runs and `Get-Help` says it "could not find" the script, PowerShell's execution policy is blocking scripts. This is the default on a fresh Windows install. Allow local and unblocked scripts for your account (no admin rights needed):
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
 - Reports are saved in the current folder.
 - Settings that live in the toolkit's config file use built-in defaults, for example the health check thresholds and the certificate stores.
 - A few scripts get extra parameters instead:
@@ -117,6 +123,7 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    ```powershell
    Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File
    ```
+   If scripts won't run at all, set the execution policy as described under [Standalone scripts](#standalone-scripts).
 
 3. **Create your config** from the template:
    ```powershell
