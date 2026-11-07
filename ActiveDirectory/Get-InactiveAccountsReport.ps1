@@ -12,10 +12,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Requires: ActiveDirectory module (RSAT)
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
