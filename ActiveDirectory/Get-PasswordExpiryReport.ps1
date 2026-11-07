@@ -12,10 +12,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Requires: ActiveDirectory module (RSAT)
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -109,15 +105,24 @@ function New-UserNotificationHtml($User) {
         1            { 'tomorrow'; break }
         default      { "in $($User.DaysLeft) days" }
     }
-    $font = 'font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#1f2328;'
+    $st   = $script:ReportStyle
+    $p    = "$($st.Sans)font-size:14px;line-height:1.6;color:$($st.Ink);margin:0 0 14px 0;"
     return @"
-<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="$font">
-<p style="$font">Hello $(& $enc $name),</p>
-<p style="$font">The password for your account <b>$(& $enc $User.SamAccountName)</b> expires <b>$when</b> ($($User.ExpiresOn.ToString('dddd d MMMM yyyy, HH:mm'))).</p>
-<p style="$font">To change it: $(& $enc $instructions)</p>
-<p style="$font">If you are working remotely, connect to the VPN before changing your password so your laptop picks up the new one.</p>
-<p style="$font">If you need help, please contact $(& $enc $helpdesk).</p>
-<p style="$font">This is an automated message - please do not reply.</p>
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:$($st.Page);">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:$($st.Page);"><tr><td align="center" style="padding:28px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background-color:$($st.Card);border:1px solid $($st.Line);border-top:3px solid $($st.Ink);border-radius:4px;">
+<tr><td style="padding:26px 30px 8px 30px;">
+<div style="$($st.Mono)font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:$($st.Muted);margin:0 0 10px 0;">Password reminder</div>
+<div style="$($st.Sans)font-size:20px;font-weight:600;line-height:1.3;color:$($st.Ink);margin:0 0 18px 0;">Your password expires $when</div>
+<p style="$p">Hello $(& $enc $name),</p>
+<p style="$p">The password for your account <b>$(& $enc $User.SamAccountName)</b> expires on <b>$($User.ExpiresOn.ToString('dddd d MMMM yyyy, HH:mm'))</b>.</p>
+<p style="$p"><b>To change it:</b> $(& $enc $instructions)</p>
+<p style="$p">If you are working remotely, connect to the VPN before changing your password so your laptop picks up the new one.</p>
+<p style="$p">If you need help, please contact $(& $enc $helpdesk).</p>
+</td></tr>
+<tr><td style="padding:0 30px 22px 30px;"><div style="border-top:1px solid $($st.Line);padding-top:12px;$($st.Mono)font-size:10.5px;letter-spacing:0.06em;color:$($st.Muted);">This is an automated message. Please do not reply.</div></td></tr>
+</table></td></tr></table>
 </body></html>
 "@
 }
