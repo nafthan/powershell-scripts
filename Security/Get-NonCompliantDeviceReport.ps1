@@ -19,10 +19,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Requires: Microsoft.Graph.Authentication module, Global Reader (or Intune Administrator) plus Security Reader
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
@@ -501,6 +497,11 @@ DeviceInfo
             $top = @($rows | Where-Object { $_.Risk -in 'High', 'Medium' } | Select-Object -First 50)
             $html = New-HtmlReport -Title 'Non-compliant devices' -IntroLines @(
                 "$tenantName - $compliantPct% of $($allDevices.Count) Intune devices are compliant. $($rows.Count) device(s) need attention: $($counts.High) high, $($counts.Medium) medium, $($counts.Low) low."
+            ) -Meta ([ordered]@{ Tenant = $tenantName }) -Stats @(
+                @{ Label = 'Compliant'; Value = "$compliantPct%" }
+                @{ Label = 'Need attention'; Value = $rows.Count }
+                @{ Label = 'High risk'; Value = $counts.High; Status = 'High' }
+                @{ Label = 'Medium risk'; Value = $counts.Medium; Status = 'Medium' }
             ) -Sections @(
                 @{ Heading = "High and medium risk ($(@($rows | Where-Object { $_.Risk -in 'High', 'Medium' }).Count))"
                    Html    = ConvertTo-HtmlTable -Rows $top -Columns @('Risk', 'Device', 'User', 'Platform', 'IntuneCompliance', 'Issues', 'LastSync') -StatusColumn 'Risk' -EmptyText 'None.' }
