@@ -14,10 +14,6 @@
     Website: https://nafthan.co.uk
     Repo   : https://github.com/nafthan/powershell-scripts
     Requires: local administrator on the target; PowerShell remoting (WinRM) for -ComputerName
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding()]
 param(
