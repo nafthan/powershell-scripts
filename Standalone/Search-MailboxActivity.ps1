@@ -36,9 +36,10 @@ param(
     [string]$CertificateThumbprint,
     [switch]$UseDeviceCode,
 
-    # Report labels (HTML reports and emails)
+    # Report look: a theme file (see themes\ in the repo) and the labels on HTML reports
+    [string]$ThemeFile,
     [string]$Organisation,
-    [string]$Classification = 'Internal'
+    [string]$Classification
 )
 
 #region Shared helpers (copied in by build/Build-Standalone.ps1 - edit Shared/Common.ps1 in the repo instead)
@@ -47,11 +48,36 @@ $script:ToolkitRoot   = $PSScriptRoot
 
 $script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
-$script:ReportStyle = @{
-    Sans   = "font-family:'IBM Plex Sans','Segoe UI',Helvetica,Arial,sans-serif;"
-    Mono   = "font-family:'IBM Plex Mono',Consolas,'Courier New',monospace;"
-    Page   = '#f4f2ee'; Card = '#ffffff'; Ink = '#1c1b19'; Text = '#45423d'; Muted = '#78736a'
-    Line   = '#e6e2da'; Rule = '#d6d1c8'; Head = '#faf9f7'; OnInk = '#e8e4dc'
+$script:DefaultTheme = @{
+    Organisation    = ''
+    Classification  = 'Internal'
+    LogoUrl         = ''
+
+    Font            = "'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
+    LabelFont       = "'IBM Plex Mono', Consolas, 'Courier New', monospace"
+    UppercaseLabels = $true
+    ExcelFont       = 'Segoe UI'
+    ExcelHeaderFont = 'Consolas'
+    ExcelFontSize   = 10
+
+    Primary         = '#1c1b19'
+    OnPrimary       = '#e8e4dc'
+    Accent          = ''
+    Heading         = '#1c1b19'
+    Subtitle        = '#45423d'
+    Text            = '#1c1b19'
+    Muted           = '#78736a'
+    Page            = '#f4f2ee'
+    Card            = '#ffffff'
+    Line            = '#e6e2da'
+    Rule            = '#d6d1c8'
+    RowStripe       = ''
+    LabelFill       = ''
+
+    StatusBad       = @('#9b2c2c', '#f9ebe9', '#ecc9c4')
+    StatusWarning   = @('#875a0b', '#fbf3e1', '#ecd9ab')
+    StatusInfo      = @('#2d5a86', '#eaf1f8', '#c7d7e8')
+    StatusGood      = @('#2f6a47', '#e9f3ec', '#c4ddcc')
 }
 
 function Get-ToolkitConfig {
@@ -63,7 +89,8 @@ function Get-ToolkitConfig {
             To = @($MailTo | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         }
     }
-    $cfg.General.Organisation = $Organisation; $cfg.General.Classification = $Classification
+    if ($ThemeFile) { $cfg.Theme = @{ File = $ThemeFile } }
+    if ($script:PSBoundParameters.ContainsKey('Organisation')) { $cfg.General.Organisation = $Organisation }; if ($script:PSBoundParameters.ContainsKey('Classification')) { $cfg.General.Classification = $Classification }
     return $cfg
 }
 
@@ -84,22 +111,99 @@ function Resolve-ToolkitPath([string]$PathValue) {
     return [System.IO.Path]::GetFullPath((Join-Path $script:ToolkitRoot $PathValue))
 }
 
-function Get-StatusStyle([string]$Status) {
-    <# Text, background and border colours for a status badge. #>
-    switch -Regex ($Status) {
-        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { return @{ Fg = '#9b2c2c'; Bg = '#f9ebe9'; Bd = '#ecc9c4' } }
-        '^(Warning|Expiring|Medium)'                                  { return @{ Fg = '#875a0b'; Bg = '#fbf3e1'; Bd = '#ecd9ab' } }
-        '^Low'                                                        { return @{ Fg = '#2d5a86'; Bg = '#eaf1f8'; Bd = '#c7d7e8' } }
-        '^(OK|Done|Requested)'                                        { return @{ Fg = '#2f6a47'; Bg = '#e9f3ec'; Bd = '#c4ddcc' } }
-        default                                                       { return $null }
+function ConvertTo-ThemeColour($Value, [string]$Name, [switch]$AllowEmpty) {
+    <# '#1f3a5f', '1F3A5F' or '#1f3a5f'-style values -> '#1f3a5f'. Returns $null if invalid. #>
+    $v = "$Value".Trim()
+    if ($v -eq '' -and $AllowEmpty) { return '' }
+    if ($v -match '^#?([0-9a-fA-F]{6})$') { return "#$($Matches[1].ToLowerInvariant())" }
+    Write-Warning "Theme setting $Name = '$Value' is not a colour like '#1f3a5f'. Using the default."
+    return $null
+}
+
+function Get-ReportTheme {
+    <#
+        Returns the report theme: built-in defaults, then the theme file (Theme.File in the config,
+        or -ThemeFile on a standalone script), then any other settings in the Theme section.
+    #>
+    if ($script:ReportThemeCache) { return $script:ReportThemeCache }
+    $theme = @{}
+    foreach ($k in $script:DefaultTheme.Keys) { $theme[$k] = $script:DefaultTheme[$k] }
+
+    $cfg     = Get-Variable -Name config -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $section = if ($cfg -is [hashtable] -and $cfg['Theme'] -is [hashtable]) { $cfg['Theme'] } else { @{} }
+    $layers  = @()
+    if ($section['File']) {
+        $file = "$($section['File'])"
+        $path = if ([System.IO.Path]::IsPathRooted($file)) { $file }
+                elseif (Test-Path -LiteralPath (Join-Path (Get-Location).Path $file)) { Join-Path (Get-Location).Path $file }
+                else { Resolve-ToolkitPath $file }
+        try { $layers += , (Import-PowerShellDataFile -LiteralPath $path -ErrorAction Stop) }
+        catch { Write-Warning "Theme file '$file' could not be read, so the default look is used. Details: $($_.Exception.Message)" }
     }
+    $layers += , $section
+    foreach ($layer in $layers) {
+        foreach ($k in $layer.Keys) {
+            if ($k -eq 'File') { continue }
+            if ($k -eq 'Organisation' -and "$($layer[$k])".Trim() -eq '') { continue }   # empty means "not set here"
+            if (-not $script:DefaultTheme.ContainsKey($k)) { Write-Warning "Unknown theme setting '$k' ignored."; continue }
+            $theme[$k] = $layer[$k]
+        }
+    }
+
+    # Validate, so a typo can't break the HTML or the workbook
+    foreach ($k in 'Primary', 'OnPrimary', 'Heading', 'Subtitle', 'Text', 'Muted', 'Page', 'Card', 'Line', 'Rule') {
+        $c = ConvertTo-ThemeColour $theme[$k] $k; $theme[$k] = if ($c) { $c } else { $script:DefaultTheme[$k] }
+    }
+    foreach ($k in 'Accent', 'RowStripe', 'LabelFill') {
+        $c = ConvertTo-ThemeColour $theme[$k] $k -AllowEmpty; $theme[$k] = if ($null -ne $c) { $c } else { '' }
+    }
+    foreach ($k in 'StatusBad', 'StatusWarning', 'StatusInfo', 'StatusGood') {
+        $parts = @($theme[$k])
+        $ok = $parts.Count -eq 3 -and -not (@($parts | ForEach-Object { ConvertTo-ThemeColour $_ $k }) -contains $null)
+        $theme[$k] = if ($ok) { @($parts | ForEach-Object { ConvertTo-ThemeColour $_ $k }) } else { $script:DefaultTheme[$k] }
+    }
+    foreach ($k in 'Font', 'LabelFont', 'ExcelFont', 'ExcelHeaderFont', 'Organisation', 'Classification') {
+        $theme[$k] = ("$($theme[$k])" -replace '["<>;{}\\]', '').Trim()
+    }
+    if (-not $theme.Font)            { $theme.Font = $script:DefaultTheme.Font }
+    if (-not $theme.LabelFont)       { $theme.LabelFont = $theme.Font }
+    if (-not $theme.ExcelFont)       { $theme.ExcelFont = $script:DefaultTheme.ExcelFont }
+    if (-not $theme.ExcelHeaderFont) { $theme.ExcelHeaderFont = $theme.ExcelFont }
+    $size = 0; if (-not [int]::TryParse("$($theme.ExcelFontSize)", [ref]$size) -or $size -lt 6 -or $size -gt 20) { $size = 10 }
+    $theme.ExcelFontSize   = $size
+    $theme.UppercaseLabels = [bool]$theme.UppercaseLabels
+    $logo = "$($theme.LogoUrl)".Trim()
+    $theme.LogoUrl = if ($logo -match '^https://[^\s"<>]+$') { $logo } else { if ($logo) { Write-Warning 'Theme LogoUrl must be an https:// address. Ignored.' }; '' }
+
+    # Ready-made CSS pieces used by the HTML functions
+    $theme.Css = @{
+        Sans  = "font-family:$($theme.Font);"
+        Label = "font-family:$($theme.LabelFont);" + $(if ($theme.UppercaseLabels) { 'text-transform:uppercase;letter-spacing:0.12em;' } else { 'letter-spacing:0.02em;' })
+    }
+    $script:ReportThemeCache = $theme
+    return $theme
+}
+
+function Get-StatusStyle([string]$Status) {
+    <# Text, background and border colours for a status value, from the theme. #>
+    $t = Get-ReportTheme
+    $c = switch -Regex ($Status) {
+        '^(Critical|Expired|Error|Unreachable|Failed|Not done|High)' { $t.StatusBad; break }
+        '^(Warning|Expiring|Medium)'                                  { $t.StatusWarning; break }
+        '^Low'                                                        { $t.StatusInfo; break }
+        '^(OK|Done|Requested)'                                        { $t.StatusGood; break }
+        default                                                       { $null }
+    }
+    if (-not $c) { return $null }
+    return @{ Fg = $c[0]; Bg = $c[1]; Bd = $c[2] }
 }
 
 function ConvertTo-HtmlStatusBadge([string]$Status) {
     $enc = [System.Net.WebUtility]::HtmlEncode($Status)
     $c = Get-StatusStyle $Status
     if (-not $c) { return $enc }
-    return "<span style=`"$($script:ReportStyle.Mono)font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;white-space:nowrap;color:$($c.Fg);background-color:$($c.Bg);border:1px solid $($c.Bd);border-radius:999px;padding:2px 9px;`">$enc</span>"
+    $t = Get-ReportTheme
+    return "<span style=`"$($t.Css.Label)font-size:11px;font-weight:600;letter-spacing:0.06em;white-space:nowrap;color:$($c.Fg);background-color:$($c.Bg);border:1px solid $($c.Bd);border-radius:999px;padding:2px 9px;`">$enc</span>"
 }
 
 function ConvertTo-HtmlTable {
@@ -113,29 +217,30 @@ function ConvertTo-HtmlTable {
         [string]$StatusColumn,
         [string]$EmptyText = 'None.'
     )
-    $h = $script:ReportStyle
+    $t = Get-ReportTheme
     if ($null -eq $Rows -or @($Rows).Count -eq 0) {
-        return "<p style=`"$($h.Sans)font-size:13px;color:$($h.Muted);margin:0 0 8px 0;`">$([System.Net.WebUtility]::HtmlEncode($EmptyText))</p>"
+        return "<p style=`"$($t.Css.Sans)font-size:13px;color:$($t.Muted);margin:0 0 8px 0;`">$([System.Net.WebUtility]::HtmlEncode($EmptyText))</p>"
     }
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-collapse:collapse;width:100%;border:1px solid $($h.Line);margin:0 0 8px 0;`">")
+    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-collapse:collapse;width:100%;border:1px solid $($t.Line);margin:0 0 8px 0;`">")
     [void]$sb.Append('<tr>')
     foreach ($c in $Columns) {
         $label = [regex]::Replace($c, '(?<=[a-z])(?=[A-Z])', ' ')   # SizeGB -> Size GB, DisplayName -> Display Name
-        [void]$sb.Append("<th align=`"left`" style=`"$($h.Mono)font-size:10.5px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:$($h.OnInk);background-color:$($h.Ink);text-align:left;padding:9px 12px;white-space:nowrap;`">$([System.Net.WebUtility]::HtmlEncode($label))</th>")
+        [void]$sb.Append("<th align=`"left`" style=`"$($t.Css.Label)font-size:10.5px;font-weight:600;color:$($t.OnPrimary);background-color:$($t.Primary);text-align:left;padding:9px 12px;white-space:nowrap;`">$([System.Net.WebUtility]::HtmlEncode($label))</th>")
     }
     [void]$sb.Append('</tr>')
     $rowList = @($Rows); $last = $rowList.Count - 1
     for ($i = 0; $i -le $last; $i++) {
         $row = $rowList[$i]
-        $border = if ($i -lt $last) { "border-bottom:1px solid $($h.Line);" } else { '' }
+        $border = if ($i -lt $last) { "border-bottom:1px solid $($t.Line);" } else { '' }
+        $stripe = if ($t.RowStripe -and $i % 2 -eq 1) { "background-color:$($t.RowStripe);" } else { '' }
         [void]$sb.Append('<tr>')
         foreach ($c in $Columns) {
             $val = $row.$c
             if ($val -is [datetime]) { $val = $val.ToString('yyyy-MM-dd HH:mm') }
             elseif ($val -is [bool]) { $val = if ($val) { 'Yes' } else { 'No' } }
             $cell = if ($c -eq $StatusColumn) { ConvertTo-HtmlStatusBadge "$val" } else { [System.Net.WebUtility]::HtmlEncode("$val") }
-            [void]$sb.Append("<td style=`"$($h.Sans)font-size:13px;line-height:1.45;color:$($h.Ink);padding:9px 12px;vertical-align:top;$border`">$cell</td>")
+            [void]$sb.Append("<td style=`"$($t.Css.Sans)font-size:13px;line-height:1.45;color:$($t.Text);padding:9px 12px;vertical-align:top;$border$stripe`">$cell</td>")
         }
         [void]$sb.Append('</tr>')
     }
@@ -143,13 +248,24 @@ function ConvertTo-HtmlTable {
     return $sb.ToString()
 }
 
+function Get-ReportLabels {
+    <# Organisation and classification: General section / script parameters first, then the theme. #>
+    $t   = Get-ReportTheme
+    $cfg = Get-Variable -Name config -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $general = if ($cfg -is [hashtable] -and $cfg['General'] -is [hashtable]) { $cfg['General'] } else { @{} }
+    $org = "$($general['Organisation'])".Trim()
+    if (-not $org) { $org = $t.Organisation }
+    # An empty Classification hides the label, so only fall back when it isn't set at all
+    $class = if ($general.ContainsKey('Classification') -and $null -ne $general['Classification']) { "$($general['Classification'])".Trim() } else { $t.Classification }
+    return @{ Organisation = $org; Classification = $class }
+}
+
 function New-HtmlReport {
     <#
-        Wraps sections into a full HTML page (also used as the email body).
+        Wraps sections into a full HTML page (also used as the email body). Colours and fonts come from the theme.
         -Sections: array of @{ Heading = '...'; Html = '...' }
         -Stats:    optional summary tiles, array of @{ Label = '...'; Value = '...'; Status = 'Critical|Warning|OK|...' }
         -Meta:     optional extra rows for the details block, e.g. [ordered]@{ Tenant = 'Contoso' }
-        Organisation and classification come from General.Organisation and General.Classification in the config.
     #>
     param(
         [string]$Title,
@@ -158,15 +274,11 @@ function New-HtmlReport {
         [object[]]$Stats,
         [System.Collections.IDictionary]$Meta
     )
-    $h   = $script:ReportStyle
-    $enc = { param($t) [System.Net.WebUtility]::HtmlEncode("$t") }
+    $t   = Get-ReportTheme
+    $enc = { param($x) [System.Net.WebUtility]::HtmlEncode("$x") }
     $now = Get-Date
     $scriptName = Split-Path -Leaf "$($MyInvocation.PSCommandPath)"
-    $cfg = Get-Variable -Name config -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-    # Read these directly so an empty Classification hides the label instead of falling back to the default
-    $general        = if ($cfg -is [hashtable] -and $cfg['General'] -is [hashtable]) { $cfg['General'] } else { @{} }
-    $classification = if ($general.ContainsKey('Classification')) { "$($general['Classification'])".Trim() } else { 'Internal' }
-    $organisation   = "$($general['Organisation'])".Trim()
+    $labels = Get-ReportLabels
     $runBy = if ($env:USERNAME) { if ($env:USERDOMAIN) { "$env:USERDOMAIN\$env:USERNAME" } else { $env:USERNAME } } elseif ($env:USER) { $env:USER } else { '' }
 
     $details = [ordered]@{}
@@ -176,37 +288,41 @@ function New-HtmlReport {
     $details['Computer'] = [System.Environment]::MachineName
     $details['Script']   = $scriptName
 
+    $label = $t.Css.Label; $sans = $t.Css.Sans
     $sb  = New-Object System.Text.StringBuilder
     [void]$sb.Append("<!DOCTYPE html><html lang=`"en`"><head><meta charset=`"utf-8`"><meta name=`"viewport`" content=`"width=device-width,initial-scale=1`"><title>$(& $enc $Title)</title></head>")
-    [void]$sb.Append("<body style=`"margin:0;padding:0;background-color:$($h.Page);`">")
-    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"background-color:$($h.Page);`"><tr><td align=`"center`" style=`"padding:28px 16px;`">")
-    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"max-width:1040px;width:100%;background-color:$($h.Card);border:1px solid $($h.Line);`">")
+    [void]$sb.Append("<body style=`"margin:0;padding:0;background-color:$($t.Page);`">")
+    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"background-color:$($t.Page);`"><tr><td align=`"center`" style=`"padding:28px 16px;`">")
+    [void]$sb.Append("<table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"max-width:1040px;width:100%;background-color:$($t.Card);border:1px solid $($t.Line);`">")
 
-    # Top bar: organisation / report type on the left, classification on the right
-    $left = if ($organisation) { "$(& $enc $organisation) &nbsp;/&nbsp; Report" } else { 'Report' }
-    [void]$sb.Append("<tr><td style=`"background-color:$($h.Ink);padding:0;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`"><tr>")
-    [void]$sb.Append("<td style=`"$($h.Mono)font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase;color:$($h.OnInk);padding:10px 32px;`">$left</td>")
-    if ($classification) {
-        [void]$sb.Append("<td align=`"right`" style=`"padding:6px 32px 6px 0;`"><span style=`"$($h.Mono)font-size:10.5px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:$($h.Ink);background-color:$($h.OnInk);padding:4px 10px;`">$(& $enc $classification)</span></td>")
+    # Top bar: logo / organisation on the left, classification on the right, optional accent stripe below
+    $left = if ($labels.Organisation) { "$(& $enc $labels.Organisation) &nbsp;/&nbsp; Report" } else { 'Report' }
+    if ($t.LogoUrl) { $left = "<img src=`"$(& $enc $t.LogoUrl)`" alt=`"$(& $enc $labels.Organisation)`" height=`"22`" style=`"height:22px;vertical-align:middle;border:0;margin-right:12px;`">$left" }
+    $stripe = if ($t.Accent) { "border-bottom:4px solid $($t.Accent);" } else { '' }
+    [void]$sb.Append("<tr><td style=`"background-color:$($t.Primary);padding:0;$stripe`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`"><tr>")
+    [void]$sb.Append("<td style=`"$($label)font-size:10.5px;color:$($t.OnPrimary);padding:10px 32px;`">$left</td>")
+    if ($labels.Classification) {
+        [void]$sb.Append("<td align=`"right`" style=`"padding:6px 32px 6px 0;`"><span style=`"$($label)font-size:10.5px;font-weight:600;color:$($t.Primary);background-color:$($t.OnPrimary);padding:4px 10px;`">$(& $enc $labels.Classification)</span></td>")
     }
     [void]$sb.Append('</tr></table></td></tr>')
 
     # Title and intro
     [void]$sb.Append("<tr><td style=`"padding:26px 32px 18px 32px;`">")
-    [void]$sb.Append("<div style=`"$($h.Sans)font-size:24px;line-height:1.25;font-weight:600;color:$($h.Ink);margin:0 0 10px 0;`">$(& $enc $Title)</div>")
+    [void]$sb.Append("<div style=`"$($sans)font-size:24px;line-height:1.25;font-weight:600;color:$($t.Heading);margin:0 0 10px 0;`">$(& $enc $Title)</div>")
     foreach ($line in $IntroLines) {
-        [void]$sb.Append("<div style=`"$($h.Sans)font-size:13.5px;line-height:1.6;color:$($h.Text);margin:0;`">$(& $enc $line)</div>")
+        [void]$sb.Append("<div style=`"$($sans)font-size:13.5px;line-height:1.6;color:$($t.Subtitle);margin:0;`">$(& $enc $line)</div>")
     }
     [void]$sb.Append('</td></tr>')
 
     # Details block (document control)
-    [void]$sb.Append("<tr><td style=`"padding:0 32px 4px 32px;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-collapse:collapse;border-top:1px solid $($h.Rule);border-bottom:1px solid $($h.Rule);`"><tr>")
+    [void]$sb.Append("<tr><td style=`"padding:0 32px 4px 32px;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-collapse:collapse;border-top:1px solid $($t.Rule);border-bottom:1px solid $($t.Rule);`"><tr>")
     $keys = @($details.Keys); $w = [math]::Floor(100 / $keys.Count)
     for ($i = 0; $i -lt $keys.Count; $i++) {
-        $sep = if ($i -gt 0) { "border-left:1px solid $($h.Line);" } else { '' }
-        [void]$sb.Append("<td width=`"$w%`" valign=`"top`" style=`"padding:10px 12px 10px $(if ($i) { 12 } else { 0 })px;$sep`">")
-        [void]$sb.Append("<div style=`"$($h.Mono)font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:$($h.Muted);margin:0 0 3px 0;`">$(& $enc $keys[$i])</div>")
-        [void]$sb.Append("<div style=`"$($h.Sans)font-size:13px;color:$($h.Ink);word-break:break-word;`">$(& $enc $details[$keys[$i]])</div></td>")
+        $sep  = if ($i -gt 0) { "border-left:1px solid $($t.Line);" } else { '' }
+        $fill = if ($t.LabelFill) { "background-color:$($t.LabelFill);" } else { '' }
+        [void]$sb.Append("<td width=`"$w%`" valign=`"top`" style=`"padding:10px 12px 10px $(if ($i -or $fill) { 12 } else { 0 })px;$sep$fill`">")
+        [void]$sb.Append("<div style=`"$($label)font-size:10px;color:$($t.Muted);margin:0 0 3px 0;`">$(& $enc $keys[$i])</div>")
+        [void]$sb.Append("<div style=`"$($sans)font-size:13px;color:$($t.Text);word-break:break-word;`">$(& $enc $details[$keys[$i]])</div></td>")
     }
     [void]$sb.Append('</tr></table></td></tr>')
 
@@ -215,32 +331,33 @@ function New-HtmlReport {
         [void]$sb.Append("<tr><td style=`"padding:20px 32px 4px 32px;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`"><tr>")
         $n = @($Stats).Count; $w = [math]::Floor(100 / $n)
         for ($i = 0; $i -lt $n; $i++) {
-            $t = @($Stats)[$i]
-            $c = if ($t.Status) { Get-StatusStyle "$($t.Status)" } else { $null }
-            $valColour = if ($c -and "$($t.Value)" -ne '0') { $c.Fg } else { $h.Ink }
-            $bar = if ($c) { $c.Fg } else { $h.Ink }
+            $s = @($Stats)[$i]
+            $c = if ($s.Status) { Get-StatusStyle "$($s.Status)" } else { $null }
+            $valColour = if ($c -and "$($s.Value)" -ne '0') { $c.Fg } else { $t.Text }
+            $bar = if ($c) { $c.Fg } else { $t.Primary }
             $gap = if ($i -lt $n - 1) { 'padding-right:10px;' } else { '' }
-            [void]$sb.Append("<td width=`"$w%`" valign=`"top`" style=`"$gap`"><div style=`"border:1px solid $($h.Line);border-top:3px solid $bar;padding:12px 14px;`">")
-            [void]$sb.Append("<div style=`"$($h.Mono)font-size:10.5px;letter-spacing:0.12em;text-transform:uppercase;color:$($h.Muted);margin:0 0 4px 0;`">$(& $enc $t.Label)</div>")
-            [void]$sb.Append("<div style=`"$($h.Sans)font-size:22px;font-weight:600;line-height:1.2;color:$valColour;`">$(& $enc "$($t.Value)")</div></div></td>")
+            [void]$sb.Append("<td width=`"$w%`" valign=`"top`" style=`"$gap`"><div style=`"border:1px solid $($t.Line);border-top:3px solid $bar;padding:12px 14px;`">")
+            [void]$sb.Append("<div style=`"$($label)font-size:10.5px;color:$($t.Muted);margin:0 0 4px 0;`">$(& $enc $s.Label)</div>")
+            [void]$sb.Append("<div style=`"$($sans)font-size:22px;font-weight:600;line-height:1.2;color:$valColour;`">$(& $enc "$($s.Value)")</div></div></td>")
         }
         [void]$sb.Append('</tr></table></td></tr>')
     }
 
-    # Numbered sections
+    # Numbered sections, with the accent colour (or primary) under each heading
+    $ruleColour = if ($t.Accent) { $t.Accent } else { $t.Primary }
     $num = 0
     foreach ($s in $Sections) {
         $num++
         [void]$sb.Append("<tr><td style=`"padding:24px 32px 6px 32px;`">")
-        [void]$sb.Append("<div style=`"border-bottom:1px solid $($h.Ink);padding:0 0 7px 0;margin:0 0 12px 0;`"><span style=`"$($h.Mono)font-size:12px;color:$($h.Muted);letter-spacing:0.08em;`">$($num.ToString('00'))</span>&nbsp;&nbsp;<span style=`"$($h.Sans)font-size:15px;font-weight:600;color:$($h.Ink);`">$(& $enc $s.Heading)</span></div>")
+        [void]$sb.Append("<div style=`"border-bottom:2px solid $ruleColour;padding:0 0 7px 0;margin:0 0 12px 0;`"><span style=`"$($label)font-size:12px;color:$($t.Muted);letter-spacing:0.08em;`">$($num.ToString('00'))</span>&nbsp;&nbsp;<span style=`"$($sans)font-size:15px;font-weight:600;color:$($t.Heading);`">$(& $enc $s.Heading)</span></div>")
         [void]$sb.Append($s.Html)
         [void]$sb.Append('</td></tr>')
     }
 
     # Footer: organisation and classification / title / generated
-    $footLeft = (@($organisation, $classification) | Where-Object { $_ }) -join ' - '
-    [void]$sb.Append("<tr><td style=`"padding:20px 32px 22px 32px;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-top:1px solid $($h.Line);`"><tr>")
-    $foot = "$($h.Mono)font-size:10.5px;letter-spacing:0.06em;color:$($h.Muted);padding-top:12px;"
+    $footLeft = (@($labels.Organisation, $labels.Classification) | Where-Object { $_ }) -join ' - '
+    [void]$sb.Append("<tr><td style=`"padding:20px 32px 22px 32px;`"><table role=`"presentation`" width=`"100%`" cellpadding=`"0`" cellspacing=`"0`" style=`"border-top:1px solid $($t.Line);`"><tr>")
+    $foot = "$($label)font-size:10.5px;letter-spacing:0.06em;text-transform:none;color:$($t.Muted);padding-top:12px;"
     [void]$sb.Append("<td style=`"$foot`">$(& $enc $footLeft)</td>")
     [void]$sb.Append("<td align=`"center`" style=`"$foot`">$(& $enc $Title)</td>")
     [void]$sb.Append("<td align=`"right`" style=`"$foot`">$(& $enc $now.ToString('yyyy-MM-dd HH:mm'))</td>")

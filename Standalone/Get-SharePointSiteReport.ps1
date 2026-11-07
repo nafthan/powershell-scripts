@@ -22,7 +22,10 @@ param(
     [switch]$IncludeOneDrive,
     [ValidateRange(1, 3650)] [int]$InactiveDays,
 
-    [string]$OutputFile
+    [string]$OutputFile,
+
+    # Report look: a theme file (see themes\ in the repo) and the labels on HTML reports
+    [string]$ThemeFile
 )
 
 #region Shared helpers (copied in by build/Build-Standalone.ps1 - edit Shared/Common.ps1 in the repo instead)
@@ -33,6 +36,38 @@ $script:Utf8NoBom     = New-Object System.Text.UTF8Encoding($false)
 
 $script:IsWindowsHost = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
 
+$script:DefaultTheme = @{
+    Organisation    = ''
+    Classification  = 'Internal'
+    LogoUrl         = ''
+
+    Font            = "'IBM Plex Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
+    LabelFont       = "'IBM Plex Mono', Consolas, 'Courier New', monospace"
+    UppercaseLabels = $true
+    ExcelFont       = 'Segoe UI'
+    ExcelHeaderFont = 'Consolas'
+    ExcelFontSize   = 10
+
+    Primary         = '#1c1b19'
+    OnPrimary       = '#e8e4dc'
+    Accent          = ''
+    Heading         = '#1c1b19'
+    Subtitle        = '#45423d'
+    Text            = '#1c1b19'
+    Muted           = '#78736a'
+    Page            = '#f4f2ee'
+    Card            = '#ffffff'
+    Line            = '#e6e2da'
+    Rule            = '#d6d1c8'
+    RowStripe       = ''
+    LabelFill       = ''
+
+    StatusBad       = @('#9b2c2c', '#f9ebe9', '#ecc9c4')
+    StatusWarning   = @('#875a0b', '#fbf3e1', '#ecd9ab')
+    StatusInfo      = @('#2d5a86', '#eaf1f8', '#c7d7e8')
+    StatusGood      = @('#2f6a47', '#e9f3ec', '#c4ddcc')
+}
+
 function Get-ToolkitConfig {
     # Standalone: no config file. Settings come from parameters and built-in defaults.
     $cfg = @{ General = @{ OutputFolder = (Get-Location).Path } }
@@ -42,7 +77,7 @@ function Get-ToolkitConfig {
             To = @($MailTo | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         }
     }
-
+    if ($ThemeFile) { $cfg.Theme = @{ File = $ThemeFile } }
     return $cfg
 }
 
@@ -134,6 +169,7 @@ function Add-XlsxSheet {
     # Columns whose values get status colours, and the label column of an Item/Value summary sheet
     $statusCols = @(for ($i = 0; $i -lt $Headers.Count; $i++) { if ($Headers[$i] -match '^(Status|Risk|Severity|Rating|Result|Overall)$') { $i } })
     $labelCol   = if ($Headers.Count -eq 2 -and $Headers[0] -eq 'Item' -and $Headers[1] -eq 'Value') { 0 } else { -1 }
+    $stripe     = [bool](Get-ReportTheme).RowStripe
     $entry   = $Zip.CreateEntry("xl/worksheets/sheet$Index.xml")
     $w       = New-Object System.IO.StreamWriter($entry.Open(), $script:Utf8NoBom)
     try {
@@ -162,8 +198,9 @@ function Add-XlsxSheet {
                 $ref = "$($letters[$i])$r"
                 $val = $row.($Headers[$i])
                 $st  = if ($i -eq $labelCol) { 6 } elseif ($statusCols -contains $i -and $null -ne $val) { Get-XlsxStatusStyle "$val" } else { 0 }
+                if ($st -eq 0 -and $stripe -and $r % 2 -eq 1) { $st = 7 }
                 if ($null -eq $val) {
-                    $w.Write("<c r=`"$ref`" s=`"0`"/>")   # empty but styled, so the row line is unbroken
+                    $w.Write("<c r=`"$ref`" s=`"$st`"/>")   # empty but styled, so the row line is unbroken
                 }
                 elseif ($val -is [int] -or $val -is [long] -or $val -is [double] -or $val -is [decimal] -or $val -is [single]) {
                     $w.Write("<c r=`"$ref`" s=`"$st`"><v>$(([double]$val).ToString('R', $inv))</v></c>")
@@ -234,25 +271,36 @@ function Export-Xlsx {
             "<Relationship Id=`"rId$stylesId`" Type=`"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles`" Target=`"styles.xml`"/>" +
             '</Relationships>')
 
-        # Styles match the HTML reports: warm ink and greys, thin row lines, status colours like the badges.
-        #   0 body  1 header  2 red  3 amber  4 blue  5 green  6 summary label
-        $font = { param($Size, $Colour, $Name, [switch]$Bold) "<font>$(if ($Bold) { '<b/>' })<sz val=`"$Size`"/><color rgb=`"FF$Colour`"/><name val=`"$Name`"/></font>" }
-        $fill = { param($Colour) "<fill><patternFill patternType=`"solid`"><fgColor rgb=`"FF$Colour`"/><bgColor indexed=`"64`"/></patternFill></fill>" }
+        # Styles come from the report theme, so the workbook matches the HTML reports.
+        #   0 body  1 header  2 red  3 amber  4 blue  5 green  6 summary label  7 body on stripe
+        $t    = Get-ReportTheme
+        $hex  = { param($c) "FF$($c.TrimStart('#').ToUpperInvariant())" }
+        $esc  = { param($n) [System.Security.SecurityElement]::Escape($n) }
+        $font = { param($Size, $Colour, $Name, [switch]$Bold) "<font>$(if ($Bold) { '<b/>' })<sz val=`"$Size`"/><color rgb=`"$(& $hex $Colour)`"/><name val=`"$(& $esc $Name)`"/></font>" }
+        $fill = { param($Colour) "<fill><patternFill patternType=`"solid`"><fgColor rgb=`"$(& $hex $Colour)`"/><bgColor indexed=`"64`"/></patternFill></fill>" }
         $xf   = { param($Font, $Fill, $Border) "<xf numFmtId=`"0`" fontId=`"$Font`" fillId=`"$Fill`" borderId=`"$Border`" xfId=`"0`" applyFont=`"1`" applyFill=`"1`" applyBorder=`"1`" applyAlignment=`"1`"><alignment horizontal=`"left`" vertical=`"center`" indent=`"1`"/></xf>" }
+        $body = ($t.ExcelFont -split ',')[0].Trim(" '")
+        $head = ($t.ExcelHeaderFont -split ',')[0].Trim(" '")
+        $sz   = $t.ExcelFontSize
+        $stripeFill = if ($t.RowStripe) { $t.RowStripe } else { $t.Card }
+        $labelFill  = if ($t.LabelFill) { $t.LabelFill } else { $t.Card }
+        $accentBorder = if ($t.Accent) { "<border><left/><right/><top/><bottom style=`"medium`"><color rgb=`"$(& $hex $t.Accent)`"/></bottom><diagonal/></border>" } else { '<border><left/><right/><top/><bottom/><diagonal/></border>' }
         Add-ZipText $zip 'xl/styles.xml' ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
             '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
             '<fonts count="7">' +
-                (& $font 10 '1C1B19' 'Segoe UI') + (& $font 9 'E8E4DC' 'Consolas' -Bold) +
-                (& $font 10 '9B2C2C' 'Segoe UI' -Bold) + (& $font 10 '875A0B' 'Segoe UI' -Bold) +
-                (& $font 10 '2D5A86' 'Segoe UI' -Bold) + (& $font 10 '2F6A47' 'Segoe UI' -Bold) +
-                (& $font 9 '78736A' 'Consolas') + '</fonts>' +
-            '<fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
-                (& $fill '1C1B19') + (& $fill 'F9EBE9') + (& $fill 'FBF3E1') + (& $fill 'EAF1F8') + (& $fill 'E9F3EC') + '</fills>' +
-            '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>' +
-                '<border><left/><right/><top/><bottom style="thin"><color rgb="FFE6E2DA"/></bottom><diagonal/></border></borders>' +
+                (& $font $sz $t.Text $body) + (& $font ($sz - 1) $t.OnPrimary $head -Bold) +
+                (& $font $sz $t.StatusBad[0] $body -Bold) + (& $font $sz $t.StatusWarning[0] $body -Bold) +
+                (& $font $sz $t.StatusInfo[0] $body -Bold) + (& $font $sz $t.StatusGood[0] $body -Bold) +
+                (& $font ($sz - 1) $t.Muted $head) + '</fonts>' +
+            '<fills count="9"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+                (& $fill $t.Primary) + (& $fill $t.StatusBad[1]) + (& $fill $t.StatusWarning[1]) + (& $fill $t.StatusInfo[1]) + (& $fill $t.StatusGood[1]) +
+                (& $fill $stripeFill) + (& $fill $labelFill) + '</fills>' +
+            '<borders count="3"><border><left/><right/><top/><bottom/><diagonal/></border>' +
+                "<border><left/><right/><top/><bottom style=`"thin`"><color rgb=`"$(& $hex $t.Line)`"/></bottom><diagonal/></border>" +
+                $accentBorder + '</borders>' +
             '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-            '<cellXfs count="7">' +
-                (& $xf 0 0 1) + (& $xf 1 2 0) + (& $xf 2 3 1) + (& $xf 3 4 1) + (& $xf 4 5 1) + (& $xf 5 6 1) + (& $xf 6 0 1) + '</cellXfs>' +
+            '<cellXfs count="8">' +
+                (& $xf 0 0 1) + (& $xf 1 2 2) + (& $xf 2 3 1) + (& $xf 3 4 1) + (& $xf 4 5 1) + (& $xf 5 6 1) + (& $xf 6 8 1) + (& $xf 0 7 1) + '</cellXfs>' +
             '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
             '</styleSheet>')
 
@@ -280,6 +328,79 @@ function Save-Workbook {
 function New-SummaryRows([System.Collections.IDictionary]$Items) {
     <# Turns an ordered hashtable into Item/Value rows for a Summary sheet. #>
     foreach ($k in $Items.Keys) { [pscustomobject]@{ Item = $k; Value = $Items[$k] } }
+}
+
+function ConvertTo-ThemeColour($Value, [string]$Name, [switch]$AllowEmpty) {
+    <# '#1f3a5f', '1F3A5F' or '#1f3a5f'-style values -> '#1f3a5f'. Returns $null if invalid. #>
+    $v = "$Value".Trim()
+    if ($v -eq '' -and $AllowEmpty) { return '' }
+    if ($v -match '^#?([0-9a-fA-F]{6})$') { return "#$($Matches[1].ToLowerInvariant())" }
+    Write-Warning "Theme setting $Name = '$Value' is not a colour like '#1f3a5f'. Using the default."
+    return $null
+}
+
+function Get-ReportTheme {
+    <#
+        Returns the report theme: built-in defaults, then the theme file (Theme.File in the config,
+        or -ThemeFile on a standalone script), then any other settings in the Theme section.
+    #>
+    if ($script:ReportThemeCache) { return $script:ReportThemeCache }
+    $theme = @{}
+    foreach ($k in $script:DefaultTheme.Keys) { $theme[$k] = $script:DefaultTheme[$k] }
+
+    $cfg     = Get-Variable -Name config -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $section = if ($cfg -is [hashtable] -and $cfg['Theme'] -is [hashtable]) { $cfg['Theme'] } else { @{} }
+    $layers  = @()
+    if ($section['File']) {
+        $file = "$($section['File'])"
+        $path = if ([System.IO.Path]::IsPathRooted($file)) { $file }
+                elseif (Test-Path -LiteralPath (Join-Path (Get-Location).Path $file)) { Join-Path (Get-Location).Path $file }
+                else { Resolve-ToolkitPath $file }
+        try { $layers += , (Import-PowerShellDataFile -LiteralPath $path -ErrorAction Stop) }
+        catch { Write-Warning "Theme file '$file' could not be read, so the default look is used. Details: $($_.Exception.Message)" }
+    }
+    $layers += , $section
+    foreach ($layer in $layers) {
+        foreach ($k in $layer.Keys) {
+            if ($k -eq 'File') { continue }
+            if ($k -eq 'Organisation' -and "$($layer[$k])".Trim() -eq '') { continue }   # empty means "not set here"
+            if (-not $script:DefaultTheme.ContainsKey($k)) { Write-Warning "Unknown theme setting '$k' ignored."; continue }
+            $theme[$k] = $layer[$k]
+        }
+    }
+
+    # Validate, so a typo can't break the HTML or the workbook
+    foreach ($k in 'Primary', 'OnPrimary', 'Heading', 'Subtitle', 'Text', 'Muted', 'Page', 'Card', 'Line', 'Rule') {
+        $c = ConvertTo-ThemeColour $theme[$k] $k; $theme[$k] = if ($c) { $c } else { $script:DefaultTheme[$k] }
+    }
+    foreach ($k in 'Accent', 'RowStripe', 'LabelFill') {
+        $c = ConvertTo-ThemeColour $theme[$k] $k -AllowEmpty; $theme[$k] = if ($null -ne $c) { $c } else { '' }
+    }
+    foreach ($k in 'StatusBad', 'StatusWarning', 'StatusInfo', 'StatusGood') {
+        $parts = @($theme[$k])
+        $ok = $parts.Count -eq 3 -and -not (@($parts | ForEach-Object { ConvertTo-ThemeColour $_ $k }) -contains $null)
+        $theme[$k] = if ($ok) { @($parts | ForEach-Object { ConvertTo-ThemeColour $_ $k }) } else { $script:DefaultTheme[$k] }
+    }
+    foreach ($k in 'Font', 'LabelFont', 'ExcelFont', 'ExcelHeaderFont', 'Organisation', 'Classification') {
+        $theme[$k] = ("$($theme[$k])" -replace '["<>;{}\\]', '').Trim()
+    }
+    if (-not $theme.Font)            { $theme.Font = $script:DefaultTheme.Font }
+    if (-not $theme.LabelFont)       { $theme.LabelFont = $theme.Font }
+    if (-not $theme.ExcelFont)       { $theme.ExcelFont = $script:DefaultTheme.ExcelFont }
+    if (-not $theme.ExcelHeaderFont) { $theme.ExcelHeaderFont = $theme.ExcelFont }
+    $size = 0; if (-not [int]::TryParse("$($theme.ExcelFontSize)", [ref]$size) -or $size -lt 6 -or $size -gt 20) { $size = 10 }
+    $theme.ExcelFontSize   = $size
+    $theme.UppercaseLabels = [bool]$theme.UppercaseLabels
+    $logo = "$($theme.LogoUrl)".Trim()
+    $theme.LogoUrl = if ($logo -match '^https://[^\s"<>]+$') { $logo } else { if ($logo) { Write-Warning 'Theme LogoUrl must be an https:// address. Ignored.' }; '' }
+
+    # Ready-made CSS pieces used by the HTML functions
+    $theme.Css = @{
+        Sans  = "font-family:$($theme.Font);"
+        Label = "font-family:$($theme.LabelFont);" + $(if ($theme.UppercaseLabels) { 'text-transform:uppercase;letter-spacing:0.12em;' } else { 'letter-spacing:0.02em;' })
+    }
+    $script:ReportThemeCache = $theme
+    return $theme
 }
 
 #endregion
