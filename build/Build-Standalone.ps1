@@ -59,12 +59,17 @@ $emailParams = @(
     '[string[]]$MailTo'
 )
 
-$reportParams = @(
-    '# Report labels (HTML reports and emails)'
-    '[string]$Organisation'
-    "[string]`$Classification = 'Internal'"
+$themeParams = @(
+    '# Report look: a theme file (see themes\ in the repo) and the labels on HTML reports'
+    '[string]$ThemeFile'
 )
-$reportConfig = '$cfg.General.Organisation = $Organisation; $cfg.General.Classification = $Classification'
+$labelParams = @(
+    '[string]$Organisation'
+    '[string]$Classification'
+)
+# Only set what was passed, so a theme file's own Organisation and Classification still apply
+$themeConfig = 'if ($ThemeFile) { $cfg.Theme = @{ File = $ThemeFile } }'
+$labelConfig = 'if ($script:PSBoundParameters.ContainsKey(''Organisation'')) { $cfg.General.Organisation = $Organisation }; if ($script:PSBoundParameters.ContainsKey(''Classification'')) { $cfg.General.Classification = $Classification }'
 
 $configFunction = @'
 function Get-ToolkitConfig {
@@ -149,8 +154,10 @@ foreach ($folder in $sourceFolders) {
             $ast    = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
             $add    = @()
             if ($text -match 'Send-ToolkitMail') { $add += $emailParams }
-            $hasHtml = $text -match 'New-HtmlReport'
-            if ($hasHtml) { $add += $reportParams }
+            $hasHtml  = $text -match 'New-HtmlReport'
+            $hasTheme = $hasHtml -or $text -match 'Save-Workbook|Export-Xlsx|New-UserNotificationHtml'
+            if ($hasTheme) { $add += $themeParams }
+            if ($hasHtml)  { $add += $labelParams }
             if ($extra -and $extra.Params) { $add += $extra.Params }
             if ($add.Count) {
                 $insertAt = $ast.ParamBlock.Parameters[-1].Extent.EndOffset
@@ -160,7 +167,7 @@ foreach ($folder in $sourceFolders) {
             }
 
             # 2. Shared helpers in place of the dot-source line
-            $extraCfg = @($(if ($extra -and $extra.Config) { $extra.Config }), $(if ($hasHtml) { $reportConfig })) | Where-Object { $_ }
+            $extraCfg = @($(if ($extra -and $extra.Config) { $extra.Config }), $(if ($hasTheme) { $themeConfig }), $(if ($hasHtml) { $labelConfig })) | Where-Object { $_ }
             $cfgFn = $configFunction.Replace('#EXTRA#', ($extraCfg -join "`n    "))
             $names = Get-NeededFunctions ($text + "`n" + $cfgFn) | Where-Object { $_ -ne 'Get-ToolkitConfig' }
             $helpers = @('#region Shared helpers (copied in by build/Build-Standalone.ps1 - edit Shared/Common.ps1 in the repo instead)')
