@@ -17,6 +17,19 @@ They answer the questions that come up every week: who has access to what, which
 
 There are no server names, domains or email addresses in the scripts. Anything specific to your environment goes in one config file that git ignores.
 
+## Example output
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/example-xlsx.png" alt="Example Excel report"></td>
+    <td width="50%"><img src="docs/example-html.png" alt="Example HTML report"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Excel workbook: one sheet per view, with risk colours and filters</sub></td>
+    <td align="center"><sub>HTML report and email: summary tiles, numbered sections and status badges</sub></td>
+  </tr>
+</table>
+
 ## Scripts
 
 | Area | Script | What it does |
@@ -111,6 +124,7 @@ The standalone files are generated from the toolkit scripts by `build/Build-Stan
    ```
    - Replace every placeholder (`example.com`, `SERVER01`, `<...>`) with your real values.
    - The scripts warn you if a setting they use still contains a placeholder.
+   - `General.Organisation` and `General.Classification` set the organisation name and label (for example *Internal* or *Confidential*) shown at the top and bottom of HTML reports and emails.
 
 4. **Optional: SMTP authentication.** If your mail relay needs a login, create an encrypted credential file. Run this as the account that will run the scripts:
    ```powershell
