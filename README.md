@@ -91,6 +91,7 @@ Get-Help .\Get-FolderSizeReport.ps1 -Full      # every option
   - `Get-OpenPortReport.ps1 -AllowedPort 135,445,3389` flags any other open port.
   - `Get-PasswordExpiryReport.ps1 -HelpdeskContact 'the IT Service Desk on 0123 456789'` sets the contact shown in user reminders.
   - `Get-InactiveAccountsReport.ps1` has no default exclusions. Use `-Exclude 'svc_*','admin_*'` to skip service and admin accounts.
+- Scripts with HTML reports or emails take `-Organisation 'Contoso Ltd'` and `-Classification Confidential` for the labels at the top and bottom. Without them the label says *Internal* and no organisation is shown; `-Classification ''` hides the label.
 - To email a report, add the mail settings:
   ```powershell
   .\Get-MfaStatusReport.ps1 -SendEmail -SmtpServer smtp.yourdomain -MailFrom reports@yourdomain -MailTo it@yourdomain
