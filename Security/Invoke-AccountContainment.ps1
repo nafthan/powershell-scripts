@@ -20,10 +20,6 @@
     Requires: Microsoft.Graph.Authentication module (+ ExchangeOnlineManagement for mailbox steps, ActiveDirectory for synced users).
               Roles: User Administrator + Authentication Administrator (Privileged Authentication Administrator if the user is an admin),
               Exchange Administrator, and rights to reset passwords in AD.
-.LINK
-    https://github.com/nafthan/powershell-scripts
-.LINK
-    https://nafthan.co.uk
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
